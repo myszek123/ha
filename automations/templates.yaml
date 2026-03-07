@@ -1,0 +1,73 @@
+- sensor:
+    - name: "Myszolot override remaining minutes"
+      unique_id: myszolot_override_remaining_minutes
+      unit_of_measurement: "min"
+      state: >-
+        {% set on = is_state('input_boolean.myszolot_charge_override', 'on') %}
+        {% set until = states('input_datetime.myszolot_charge_override_until') %}
+        {% if not on or until in ['unknown','unavailable',''] %}
+          0
+        {% else %}
+          {% set secs = (as_timestamp(until) - as_timestamp(now())) | int %}
+          {{ (secs // 60) if secs > 0 else 0 }}
+        {% endif %}
+
+    - name: "Myszolot override remaining"
+      unique_id: myszolot_override_remaining_friendly
+      icon: mdi:timer
+      state: >-
+        {% set mins = states('sensor.myszolot_override_remaining_minutes') | int(0) %}
+        {% if mins <= 0 %}
+          Off
+        {% else %}
+          {% set h = mins // 60 %}
+          {% set m = mins % 60 %}
+          {{ (h ~ 'h ' if h > 0 else '') ~ m ~ 'm' }}
+        {% endif %}
+
+    - name: "Myszolot charging reason"
+      unique_id: myszolot_charging_reason
+      icon: mdi:information-outline
+      state: >-
+        {% set is_home = is_state('device_tracker.myszolot_location', 'home') %}
+        {% set cable = is_state('binary_sensor.myszolot_charge_cable', 'on') %}
+        {% set soc = states('sensor.myszolot_battery_level') | float(999) %}
+        {% set override = is_state('input_boolean.myszolot_charge_override', 'on') %}
+        {% set charging_state = states('sensor.myszolot_charging') %}
+
+        {% set in_g12 = (now().hour >= 22) or (now().hour < 6) or (now().hour >= 13 and now().hour < 15) %}
+        {% set price = states('sensor.pstryk_current_buy_price') | float(999) %}
+        {% set cheapest = states('input_number.electricity_cheapest_price_threshold') | float %}
+        {% set cheap = states('input_number.electricity_price_threshold') | float %}
+
+        {# 1) Car is outside #}
+        {% if not is_home %}
+          {% if charging_state == 'charging' %}
+            Outside (charging)
+          {% else %}
+            Outside (not charging)
+          {% endif %}
+
+        {# 2) Car is home but not plugged in #}
+        {% elif not cable %}
+          Home but not plugged in
+
+        {# 3) Plugged in + low SoC safety floor #}
+        {% elif soc < 30 %}
+          Min SoC (<30%)
+
+        {# 4) Manual override #}
+        {% elif override %}
+          Override (2h)
+
+        {# 5) Normal price-based policy #}
+        {% elif in_g12 and price < cheapest %}
+          G12 Fast (very cheap)
+        {% elif in_g12 and price < cheap %}
+          G12 Slow (cheap)
+        {% elif not in_g12 %}
+          Stopped (outside G12)
+        {% else %}
+          Stopped (price too high)
+        {% endif %}
+

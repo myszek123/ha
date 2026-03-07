@@ -1,0 +1,26 @@
+alias: Myszolot - Cable reminder
+description: >
+  Sends a mobile notification when a charging session is starting within 15
+  minutes and the cable is not plugged in. Quiet between 23:30 and 06:00.
+triggers:
+  - trigger: template
+    value_template: >-
+      {% set next = state_attr('sensor.myszolot_charge_reason', 'next_session_start') %}
+      {% if next %}
+        {{ (as_timestamp(next) - as_timestamp(now())) | int < 900 }}
+      {% else %}
+        false
+      {% endif %}
+conditions:
+  - condition: template
+    value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
+  - condition: time
+    after: "06:00:00"
+    before: "23:30:00"
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      message: "Myszolot: plug in to charge (session starts in < 15 min)"
+      title: "EV charging reminder"
+mode: single
+max_exceeded: silent

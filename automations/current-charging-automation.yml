@@ -1,0 +1,38 @@
+alias: Tesla Charging - Actuator
+description: >
+  Reads should_charge / target_amps from sensor.myszolot_charge_reason (produced
+  by the myszolot custom integration) and drives the physical charger entities.
+  Replaces the old G12/price-threshold/override logic — all scheduling decisions
+  now live in the integration coordinator.
+triggers:
+  - entity_id: sensor.myszolot_charge_reason
+    trigger: state
+  - minutes: /1
+    trigger: time_pattern
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ not state_attr('sensor.myszolot_charge_reason', 'should_charge') }}
+        sequence:
+          - action: switch.turn_off
+            target:
+              entity_id: switch.myszolot_charge
+    default:
+      - if:
+          - condition: template
+            value_template: "{{ not is_state('switch.autel_charge_control', 'on') }}"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.autel_charge_control
+      - action: number.set_value
+        target:
+          entity_id: number.myszolot_charge_current
+        data:
+          value: "{{ state_attr('sensor.myszolot_charge_reason', 'target_amps') }}"
+      - action: switch.turn_on
+        target:
+          entity_id: switch.myszolot_charge
+mode: single
