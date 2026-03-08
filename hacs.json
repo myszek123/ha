@@ -1,4 +1,5 @@
 {
   "name": "Myszolot Charging",
-  "category": "integration"
+  "category": "integration",
+  "render_readme": true
 }

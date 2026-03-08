@@ -166,6 +166,7 @@ def determine_reason(
     E_needed: float,
     schedule_all_prices_above_max: bool,
     is_externally_charging: bool = False,
+    charging_started: bool = False,
 ) -> tuple[str, bool, int]:
     """
     Determine the charging reason, whether to charge, and target amps.
@@ -198,7 +199,7 @@ def determine_reason(
 
     # 7. Scheduled modes
     if mode == MODE_SMART:
-        if current_soc > charge_start_soc:
+        if not charging_started and current_soc > charge_start_soc:
             return REASON_SOC_SUFFICIENT, False, 0
         if schedule_all_prices_above_max:
             return REASON_PRICE_TOO_HIGH, False, 0
@@ -272,6 +273,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         )
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
+        self._charging_started: bool = False
         self._unsub_listeners: list = []
 
     @property
@@ -362,6 +364,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             mode = MODE_SMART
             target_soc = default_target_soc
 
+        # Clear charging_started flag when target is reached
+        if current_soc >= target_soc:
+            self._charging_started = False
+
         E_needed = max(0.0, (target_soc - current_soc) / 100.0 * battery_kWh)
 
         # Build schedule for scheduled modes
@@ -403,7 +409,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             E_needed=E_needed,
             schedule_all_prices_above_max=schedule_all_prices_above_max,
             is_externally_charging=is_externally_charging,
+            charging_started=self._charging_started,
         )
+
+        # Set flag when a scheduled session starts
+        if reason == REASON_SCHEDULED:
+            self._charging_started = True
 
         cable_needed = should_charge and not cable_connected and is_home
         ns = next_session(sessions, now)

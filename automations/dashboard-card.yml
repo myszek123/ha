@@ -1,0 +1,64 @@
+type: vertical-stack
+cards:
+  - type: entities
+    title: Myszolot Charging
+    entities:
+      - entity: sensor.myszolot_charge_reason
+        name: Decision
+      - entity: sensor.myszolot_battery_level
+        name: Battery SoC
+      - entity: select.myszolot_charge_mode
+        name: Mode
+      - entity: sensor.myszolot_charge_schedule
+        name: Est. remaining cost
+      - entity: binary_sensor.myszolot_cable_needed
+        name: Cable needed?
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: button
+        name: Smart
+        icon: mdi:brain
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: smart
+      - type: button
+        name: Fast now
+        icon: mdi:flash
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: now_fast
+      - type: button
+        name: Slow now
+        icon: mdi:leaf
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: now_slow
+      - type: button
+        name: Plan trip
+        icon: mdi:map-marker-path
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: plan_trip
+      - type: button
+        name: Trip now
+        icon: mdi:car-sports
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: trip_now

@@ -270,3 +270,62 @@ def test_home_not_plugged_fallback():
     )
     assert reason == REASON_HOME_NOT_PLUGGED
     assert should_charge is False
+
+
+# ── charging_started flag behavior ──────────────────────────────────────────────
+
+def test_charging_started_bypasses_soc_sufficient():
+    """
+    When charging_started=True, soc_sufficient should be skipped.
+    This allows charging to continue past charge_start_soc.
+    """
+    # SoC=72 > charge_start_soc=69, but charging_started=True → skip soc_sufficient
+    # Should fall through to is_in_session logic
+    now = datetime(2024, 1, 15, 14, 30)
+    sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 15, 0))]
+    reason, should_charge, amps = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=72,  # above charge_start_soc=69
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        fast_amps=10,
+        slow_amps=5,
+        sessions=sessions,
+        now_dt=now,
+        E_needed=5.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,  # Flag is True → skip soc_sufficient check
+    )
+    # Should return REASON_SCHEDULED, not REASON_SOC_SUFFICIENT
+    assert reason == REASON_SCHEDULED
+    assert should_charge is True
+    assert amps == 10
+
+
+def test_charging_started_false_allows_soc_sufficient():
+    """
+    When charging_started=False, soc_sufficient should trigger.
+    This prevents starting a session if SoC is already high.
+    """
+    # SoC=72 > charge_start_soc=69, charging_started=False → should return soc_sufficient
+    reason, should_charge, amps = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=72,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        fast_amps=10,
+        slow_amps=5,
+        sessions=[],
+        now_dt=datetime(2024, 1, 15, 10, 0),
+        E_needed=5.0,
+        schedule_all_prices_above_max=False,
+        charging_started=False,  # Flag is False → allow soc_sufficient check
+    )
+    assert reason == REASON_SOC_SUFFICIENT
+    assert should_charge is False
