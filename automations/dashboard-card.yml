@@ -11,8 +11,10 @@ cards:
         name: Mode
       - entity: sensor.myszolot_charge_schedule
         name: Est. remaining cost
+      - entity: sensor.myszolot_next_session_start
+        name: Next session
       - entity: binary_sensor.myszolot_cable_needed
-        name: Cable needed?
+        name: Plug in required
   - type: grid
     columns: 3
     square: false

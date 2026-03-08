@@ -1,7 +1,9 @@
 """Sensor entities for Myszolot Charging."""
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
+from datetime import datetime
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -21,6 +23,7 @@ async def async_setup_entry(
         [
             MyszolotChargeReasonSensor(coordinator),
             MyszolotChargeScheduleSensor(coordinator),
+            MyszolotNextSessionSensor(coordinator),
             MyszolotOverrideRemainingMinutesSensor(coordinator),
             MyszolotOverrideRemainingSensor(coordinator),
         ]
@@ -97,6 +100,20 @@ class MyszolotChargeScheduleSensor(_MyszolotBaseSensor):
             "E_needed": d.get("E_needed", 0.0),
             "estimated_total_cost": d.get("estimated_total_cost", 0.0),
         }
+
+
+class MyszolotNextSessionSensor(_MyszolotBaseSensor):
+    """sensor.myszolot_next_session_start — timestamp of next scheduled charging session."""
+
+    _attr_icon = "mdi:clock-start"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+        super().__init__(coordinator, "myszolot_next_session_start", "Myszolot Next Session Start")
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._data.get("next_session_start")
 
 
 class MyszolotOverrideRemainingMinutesSensor(_MyszolotBaseSensor):

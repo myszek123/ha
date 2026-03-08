@@ -1,7 +1,7 @@
 """Binary sensor entities for Myszolot Charging."""
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,8 +30,8 @@ class MyszolotCableNeededBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     _attr_name = "Myszolot Cable Needed"
     _attr_unique_id = "myszolot_cable_needed"
-    _attr_icon = "mdi:ev-plug-type2"
-    _attr_device_class = "plug"
+    _attr_icon = "mdi:power-plug-alert"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
     def __init__(self, coordinator: MyszolotCoordinator) -> None:
         super().__init__(coordinator)
