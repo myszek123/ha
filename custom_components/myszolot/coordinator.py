@@ -20,7 +20,6 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC, DEFAULT_TRIP_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_PLAN_TRIP_DEADLINE_HOURS,
-    G12_OFF_PEAK_RANGES,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
     REASON_MIN_SOC_FLOOR, REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW,
     REASON_TRIP_CHARGING_NOW, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
@@ -33,12 +32,48 @@ _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE = {"unknown", "unavailable", "none", ""}
 
 
-def in_g12(hour: int) -> bool:
-    """Return True if hour falls within a G12 off-peak (cheap) window."""
-    for start, end in G12_OFF_PEAK_RANGES:
-        if start <= hour < end:
-            return True
-    return False
+def _get_pstryk_tomorrow_prices(hass: HomeAssistant, tomorrow_str: str) -> list[dict]:
+    """
+    Extract tomorrow's prices from the pstryk coordinator's internal data.
+
+    The pstryk coordinator stores 48h of prices in coordinator.data["prices"].
+    This function returns entries for the given tomorrow_str date (format: "YYYY-MM-DD").
+
+    Returns an empty list if fewer than 20 entries are found (validation that data exists).
+    """
+    tomorrow_prices = []
+
+    # Search pstryk coordinators in hass.data
+    pstryk_data = hass.data.get("pstryk", {})
+    for key, coordinator_or_entry in pstryk_data.items():
+        # Keys ending in "_buy" are the ones with price data
+        if not key.endswith("_buy"):
+            continue
+
+        # Try to get the coordinator's data
+        try:
+            if hasattr(coordinator_or_entry, "data"):
+                prices_list = coordinator_or_entry.data.get("prices", [])
+            else:
+                continue
+        except Exception:
+            continue
+
+        # Filter for entries matching tomorrow's date
+        for entry in prices_list:
+            if isinstance(entry, dict):
+                start = entry.get("start", "")
+                if start.startswith(tomorrow_str):
+                    tomorrow_prices.append(entry)
+
+    # Sort by start time
+    tomorrow_prices.sort(key=lambda e: e.get("start", ""))
+
+    # Validate: if < 20 entries, it's not real data (should be 24 for a full day)
+    if len(tomorrow_prices) < 20:
+        return []
+
+    return tomorrow_prices
 
 
 def build_schedule(
@@ -46,7 +81,6 @@ def build_schedule(
     E_needed: float,
     max_kWh_per_hour: float,
     now_dt: datetime,
-    g12_only: bool = True,
     deadline_hours: int = 24,
     max_price: float | None = None,
 ) -> list[dict]:
@@ -63,7 +97,6 @@ def build_schedule(
         h for h in all_prices
         if h["hour"] >= now_hour
         and h["hour"] < now_hour + deadline_hours
-        and (not g12_only or in_g12(h["hour"]))
         and (max_price is None or h["price"] <= max_price)
     ]
     eligible.sort(key=lambda h: h["price"])
@@ -118,11 +151,16 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
     for group in groups:
         first, last = group[0], group[-1]
 
+        # Calculate the actual date for this group (handles hours >= 24)
+        day_offset = first["hour"] // 24
+        actual_date = ref_date + timedelta(days=day_offset)
+        actual_hour = first["hour"] % 24
+
         # Partial first slot → shift to tail of its hour for uninterrupted charging
         start_minute = (60 - first["minutes"]) if not first["full"] else 0
 
-        start = datetime(ref_date.year, ref_date.month, ref_date.day,
-                         first["hour"], start_minute)
+        start = datetime(actual_date.year, actual_date.month, actual_date.day,
+                         actual_hour, start_minute)
         # End = start + total allocated minutes; handles midnight crossings naturally
         total_minutes = sum(s["minutes"] for s in group)
         end = start + timedelta(minutes=total_minutes)
@@ -354,6 +392,14 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         all_prices = _parse_all_prices(price_state)
 
+        # Append tomorrow's prices if available and in scheduled modes
+        if mode in (MODE_SMART, MODE_PLAN_TRIP):
+            tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
+            tomorrow_raw = _get_pstryk_tomorrow_prices(self.hass, tomorrow_str)
+            for j, entry in enumerate(tomorrow_raw):
+                price = float(entry.get("price", 0))
+                all_prices.append({"hour": 24 + j, "price": price})
+
         # Auto-reset non-smart modes when SoC reaches target
         if current_soc >= target_soc and mode != MODE_SMART:
             _LOGGER.info(
@@ -375,17 +421,16 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         schedule_all_prices_above_max = False
 
         if mode in (MODE_SMART, MODE_PLAN_TRIP) and E_needed > 0:
-            g12_only = mode == MODE_SMART
-            deadline_hours = plan_trip_deadline_hours if mode == MODE_PLAN_TRIP else 24
+            deadline_hours = plan_trip_deadline_hours if mode == MODE_PLAN_TRIP else 48
 
             # Check if hours exist at all (without price cap) vs with price cap
             uncapped = build_schedule(
                 all_prices, E_needed, max_charge_rate_kW, now,
-                g12_only=g12_only, deadline_hours=deadline_hours, max_price=None,
+                deadline_hours=deadline_hours, max_price=None,
             )
             capped = build_schedule(
                 all_prices, E_needed, max_charge_rate_kW, now,
-                g12_only=g12_only, deadline_hours=deadline_hours, max_price=max_price_threshold,
+                deadline_hours=deadline_hours, max_price=max_price_threshold,
             )
 
             if not capped and uncapped:
@@ -429,7 +474,6 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "current_soc": current_soc,
             "target_soc": target_soc,
             "E_needed": round(E_needed, 3),
-            "in_g12": in_g12(now.hour),
             "sessions": sessions,
             "next_session_start": ns["start"] if ns else None,
             "estimated_total_cost": round(sum(s["total_cost"] for s in sessions), 4),

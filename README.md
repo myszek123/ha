@@ -2,15 +2,15 @@
 
 ![Myszolot Icon](custom_components/myszolot/icon.svg)
 
-Smart G12 charging scheduler for Tesla and other EVs in Home Assistant. Optimizes charging times based on electricity prices while respecting battery health and time constraints.
+Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. Optimizes charging times based on electricity prices while respecting battery health and time constraints.
 
 ## Features
 
-- **Smart Mode**: Fractional knapsack scheduling for cheapest available hours (G12 off-peak only)
+- **Smart Mode**: Fractional knapsack scheduling for cheapest available hours across 48h window
 - **Time-Aware**: Uses hourly electricity price forecasts to choose optimal charging windows
 - **Multiple Charge Modes**: Smart (default), Fast Now, Slow Now, Plan Trip, Trip Now
 - **Battery Health**: Respects minimum SoC emergency floor and user-configurable target SoC
-- **G12 Compliance**: Off-peak rate windows for Polish G12 tariff
+- **Price-Only Filter**: Schedules based purely on price, no off-peak time restrictions
 - **Continuous Sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
 - **Session Awareness**: Partial hours shifted to tail of window for smooth power transitions
 - **Price-Aware**: Skip charging if all eligible hours exceed max price threshold
@@ -65,10 +65,10 @@ max_charge_rate_kW = fast_amps × voltage × charger_phases / 1000
 **Entity ID:** `select.myszolot_charge_mode`
 
 Available options:
-- `smart` — Smart scheduling (G12 hours, cheapest first, respects charge_start_soc)
+- `smart` — Smart scheduling (cheapest 48h window, respects charge_start_soc)
 - `now_fast` — Charge immediately at fast_amps
 - `now_slow` — Charge immediately at slow_amps
-- `plan_trip` — Schedule to 95% using all hours (no G12 filter), respects deadline
+- `plan_trip` — Schedule to 95% using cheapest hours within deadline window
 - `trip_now` — Charge immediately at fast_amps for trip (95% target)
 
 Non-smart modes auto-reset to `smart` when `soc >= target_soc`.
@@ -86,7 +86,6 @@ Non-smart modes auto-reset to `smart` when `soc >= target_soc`.
 - `current_soc` (float) — Battery SoC (%)
 - `target_soc` (int) — Target SoC (%)
 - `E_needed` (float) — Energy needed to reach target (kWh)
-- `in_g12` (bool) — Is current hour in G12 off-peak?
 - `next_session_start` (datetime) — Next scheduled session start, or None
 
 ### Sensor: Charge Schedule
@@ -138,9 +137,9 @@ The integration **does not** write to these. Create automations to actuate them 
 ### Smart (Default)
 - **Target SoC:** 80% (configurable)
 - **Speed:** Fractional knapsack — fills cheapest hours first
-- **Price Filter:** G12 off-peak hours only, skip if all > `max_price_threshold`
+- **Price Filter:** Skip if all available hours > `max_price_threshold`
 - **Charge Start SoC:** Don't schedule new sessions if SoC > 69% (prevents over-scheduling)
-- **Window:** Today + tomorrow (24h from now)
+- **Window:** Today + tomorrow (48h from now)
 
 **Use case:** Regular daily charging at home, minimize cost.
 
@@ -162,8 +161,8 @@ The integration **does not** write to these. Create automations to actuate them 
 
 ### Plan Trip
 - **Target SoC:** 95% (trip-safe level)
-- **Speed:** Fractional knapsack across all hours (no G12 filter)
-- **Price Filter:** All hours eligible (no G12 restriction)
+- **Speed:** Fractional knapsack across all hours
+- **Price Filter:** All hours eligible if below `max_price_threshold`
 - **Window:** Next N hours (configurable, default 8h)
 - **Use case:** Schedule a longer road trip within 8 hours, reach 95% charge
 
@@ -358,8 +357,8 @@ A: Check that `sensor.pstryk_current_buy_price` has `All prices` attribute with 
 **Q: Charging stops mid-session?**
 A: Verify cable is connected. Actuator automation calls `switch.turn_off` when `should_charge=False`. Check coordinator reason to diagnose.
 
-**Q: G12 hours not used?**
-A: G12 off-peak windows: 00:00–06:00, 13:00–15:00, 22:00–24:00. Confirm current hour is G12 via `sensor.myszolot_charge_reason.in_g12` attribute.
+**Q: No sessions scheduled?**
+A: Check that `sensor.pstryk_current_buy_price` has `All prices` attribute. If all available hours exceed `max_price_threshold`, no sessions will be scheduled.
 
 **Q: Session costs seem wrong?**
 A: Sessions are recalculated hourly. If prices change, sessions will update. Cost is always: sum of (session kWh × price at that hour).
@@ -373,4 +372,3 @@ MIT
 - **GitHub:** [ha_myszolot](https://github.com/you/ha_myszolot)
 - **Tesla Charging:** [Tesla Wall Connector](https://www.tesla.com/en_EU/support/wall-connector)
 - **Autel Charger:** [Autel HomeCharge AC](https://www.autelpower.com)
-- **G12 Tariff:** [Polish Energy (PGNiG/Tauron)](https://www.tauron.pl)

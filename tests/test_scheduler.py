@@ -8,7 +8,6 @@ import pytest
 from custom_components.myszolot.coordinator import (
     build_schedule,
     compute_sessions,
-    in_g12,
     is_in_session,
     next_session,
 )
@@ -25,42 +24,21 @@ def prices(*args) -> list[dict]:
     return [{"hour": h, "price": p} for h, p in args]
 
 
-# ── in_g12 ────────────────────────────────────────────────────────────────────
-
-def test_in_g12_overnight():
-    assert in_g12(22) is True
-    assert in_g12(23) is True
-    assert in_g12(0) is True
-    assert in_g12(5) is True
-
-
-def test_in_g12_afternoon_dip():
-    assert in_g12(13) is True
-    assert in_g12(14) is True
-
-
-def test_not_in_g12():
-    assert in_g12(6) is False
-    assert in_g12(12) is False
-    assert in_g12(15) is False
-    assert in_g12(21) is False
-
-
 # ── build_schedule ────────────────────────────────────────────────────────────
 
 def test_build_schedule_no_eligible_hours():
-    # All hours are outside G12 window
-    all_prices = prices(*(( h, 0.5) for h in range(6, 13)))
+    # All prices exceed max_price cap → empty result
+    all_prices = prices(*((h, 1.5) for h in range(10, 15)))
     result = build_schedule(all_prices, E_needed=5.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True)
+                            now_dt=NOW_10AM, max_price=1.0)
     assert result == []
 
 
 def test_build_schedule_exact_fill():
-    # Exactly one G12 hour with 10 kWh capacity, need exactly 10 kWh
+    # Exactly one hour with 10 kWh capacity, need exactly 10 kWh
     all_prices = prices((13, 0.5), (14, 0.6))
     result = build_schedule(all_prices, E_needed=10.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True)
+                            now_dt=NOW_10AM)
     assert len(result) == 1
     assert result[0]["hour"] == 13
     assert result[0]["kWh"] == pytest.approx(10.0)
@@ -69,10 +47,10 @@ def test_build_schedule_exact_fill():
 
 
 def test_build_schedule_partial_fill():
-    # Need 6 kWh, one G12 hour → 6/10 of the hour
+    # Need 6 kWh, one hour → 6/10 of the hour
     all_prices = prices((14, 0.4))
     result = build_schedule(all_prices, E_needed=6.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True)
+                            now_dt=NOW_10AM)
     assert len(result) == 1
     assert result[0]["kWh"] == pytest.approx(6.0)
     assert result[0]["full"] is False
@@ -80,10 +58,10 @@ def test_build_schedule_partial_fill():
 
 
 def test_build_schedule_over_demand_capped_by_available_hours():
-    # Need 30 kWh but only 2 G12 hours (13, 14) → max 20 kWh
+    # Need 30 kWh but only 2 hours (13, 14) → max 20 kWh
     all_prices = prices((13, 0.5), (14, 0.4))
     result = build_schedule(all_prices, E_needed=30.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True)
+                            now_dt=NOW_10AM)
     assert len(result) == 2
     total = sum(s["kWh"] for s in result)
     assert total == pytest.approx(20.0)  # capped by available capacity
@@ -93,7 +71,7 @@ def test_build_schedule_cheapest_first():
     # Hour 14 is cheaper → should be allocated first
     all_prices = prices((13, 0.50), (14, 0.25))
     result = build_schedule(all_prices, E_needed=12.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True)
+                            now_dt=NOW_10AM)
     # Sorted by hour, but cheapest (14) allocated first
     hour_order = [s["hour"] for s in result]
     assert hour_order == [13, 14]  # sorted chronologically
@@ -105,11 +83,11 @@ def test_build_schedule_cheapest_first():
     assert slot_by_hour[13]["full"] is False
 
 
-def test_build_schedule_g12_only_false_includes_all_hours():
-    # plan_trip mode: g12_only=False → non-G12 hours included
-    all_prices = prices((10, 0.3), (11, 0.4))  # hours 10-11 are NOT G12
+def test_build_schedule_all_hours_eligible():
+    # Without G12 filter, any in-range hour is eligible
+    all_prices = prices((10, 0.3), (11, 0.4))  # hours that were previously non-G12
     result = build_schedule(all_prices, E_needed=10.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=False)
+                            now_dt=NOW_10AM)
     assert len(result) == 1
     assert result[0]["hour"] == 10  # cheapest first
 
@@ -117,7 +95,7 @@ def test_build_schedule_g12_only_false_includes_all_hours():
 def test_build_schedule_price_cap_excludes_expensive():
     all_prices = prices((13, 1.5), (14, 0.8))
     result = build_schedule(all_prices, E_needed=10.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True, max_price=1.0)
+                            now_dt=NOW_10AM, max_price=1.0)
     # Hour 13 (1.5 PLN) excluded; hour 14 (0.8 PLN) included
     assert len(result) == 1
     assert result[0]["hour"] == 14
@@ -126,7 +104,7 @@ def test_build_schedule_price_cap_excludes_expensive():
 def test_build_schedule_price_cap_all_excluded():
     all_prices = prices((13, 1.5), (14, 1.2))
     result = build_schedule(all_prices, E_needed=10.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True, max_price=1.0)
+                            now_dt=NOW_10AM, max_price=1.0)
     assert result == []
 
 
@@ -134,7 +112,7 @@ def test_build_schedule_deadline_hours_limits_window():
     # now=10:00, deadline=4 → only hours 10..13 eligible
     all_prices = prices((13, 0.3), (14, 0.2))
     result = build_schedule(all_prices, E_needed=10.0, max_kWh_per_hour=MAX_KWH,
-                            now_dt=NOW_10AM, g12_only=True, deadline_hours=4)
+                            now_dt=NOW_10AM, deadline_hours=4)
     # Hour 14 is at now_hour(10) + 4 = 14, which is NOT < 14 → excluded
     assert all(s["hour"] < 14 for s in result)
 
@@ -228,6 +206,54 @@ def test_compute_sessions_full_then_partial_end():
     s = sessions[0]
     assert s["start"] == datetime(2024, 1, 15, 22, 0)   # first is full → start at :00
     assert s["end"] == datetime(2024, 1, 15, 23, 30)    # last is partial → end at :30
+
+
+def test_compute_sessions_spanning_midnight_with_tomorrow_hours():
+    """
+    Session spanning from today 23:00 through tomorrow 01:00 (consecutive hours 23-25).
+    Then a separate session for tomorrow 13:00-14:00 (non-consecutive, gap between 25 and 37).
+    """
+    schedule = [
+        {"hour": 23, "minutes": 60, "kWh": 10.0, "cost": 3.5, "full": True},
+        {"hour": 24, "minutes": 60, "kWh": 10.0, "cost": 0.3, "full": True},  # tomorrow 00:00
+        {"hour": 25, "minutes": 60, "kWh": 10.0, "cost": 0.3, "full": True},  # tomorrow 01:00
+        {"hour": 37, "minutes": 60, "kWh": 10.0, "cost": 0.5, "full": True},  # tomorrow 13:00
+        {"hour": 38, "minutes": 60, "kWh": 10.0, "cost": 0.5, "full": True},  # tomorrow 14:00
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    # Should have 2 sessions: hours 23-25 (consecutive) and hours 37-38 (consecutive, but separate from first)
+    assert len(sessions) == 2
+    # First session: today 23:00 through tomorrow 02:00 (3 full hours = 180 min)
+    s1 = sessions[0]
+    assert s1["start"] == datetime(2024, 1, 15, 23, 0)
+    assert s1["end"] == datetime(2024, 1, 16, 2, 0)
+    assert s1["total_kWh"] == pytest.approx(30.0)
+    # Second session: tomorrow 13:00 through 15:00 (2 full hours = 120 min)
+    s2 = sessions[1]
+    assert s2["start"] == datetime(2024, 1, 16, 13, 0)
+    assert s2["end"] == datetime(2024, 1, 16, 15, 0)
+    assert s2["total_kWh"] == pytest.approx(20.0)
+
+
+def test_compute_sessions_tomorrow_only_hours():
+    """Session with only tomorrow's hours (24-38 = tomorrow 00:00 to 14:00)."""
+    schedule = [
+        {"hour": 24, "minutes": 60, "kWh": 10.0, "cost": 0.3, "full": True},  # tomorrow 00:00
+        {"hour": 37, "minutes": 60, "kWh": 10.0, "cost": 0.5, "full": True},  # tomorrow 13:00
+        {"hour": 38, "minutes": 12, "kWh": 2.0, "cost": 0.1, "full": False},  # tomorrow 14:00 partial
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    # Should have 2 sessions: one for hour 24, one for hours 37-38
+    assert len(sessions) == 2
+    # First session: tomorrow 00:00 (full hour)
+    s1 = sessions[0]
+    assert s1["start"] == datetime(2024, 1, 16, 0, 0)
+    assert s1["end"] == datetime(2024, 1, 16, 1, 0)
+    # Second session: tomorrow 13:00 (full) + 14:00 (partial)
+    # Start at 13:00 (full hour), total 60 + 12 = 72 min → end at 14:12
+    s2 = sessions[1]
+    assert s2["start"] == datetime(2024, 1, 16, 13, 0)
+    assert s2["end"] == datetime(2024, 1, 16, 14, 12)  # 60 + 12 = 72 min from 13:00
 
 
 # ── is_in_session ─────────────────────────────────────────────────────────────

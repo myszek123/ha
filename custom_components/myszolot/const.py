@@ -42,10 +42,6 @@ MODE_TRIP_NOW = "trip_now"
 
 CHARGE_MODES = [MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW]
 
-# G12 off-peak hour ranges (Polish G12 tariff): 22:00-06:00 and 13:00-15:00
-# Represented as (start_inclusive, end_exclusive) in 24h format
-G12_OFF_PEAK_RANGES = [(22, 24), (0, 6), (13, 15)]
-
 # Reasons
 REASON_OUTSIDE_CHARGING = "outside_charging"
 REASON_OUTSIDE_NOT_CHARGING = "outside_not_charging"
