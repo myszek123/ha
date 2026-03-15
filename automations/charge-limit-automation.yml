@@ -8,7 +8,7 @@ triggers:
     trigger: state
 conditions:
   - condition: state
-    entity_id: device_tracker.myszolot
+    entity_id: device_tracker.myszolot_location
     state: home
 actions:
   - choose:

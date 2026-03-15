@@ -1,4 +1,4 @@
-alias: Myszolot - Cable reminder
+alias: Tesla Charging - Cable reminder
 description: >
   Sends a mobile notification when a charging session is starting within 15
   minutes and the cable is not plugged in. Quiet between 23:30 and 06:00.
