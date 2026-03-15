@@ -13,8 +13,8 @@ cards:
         name: Est. remaining cost
       - entity: sensor.myszolot_next_session_start
         name: Next session
-      - entity: binary_sensor.myszolot_cable_needed
-        name: Plug in required
+      - entity: binary_sensor.myszolot_charge_cable
+        name: Cable connected
   - type: grid
     columns: 3
     square: false

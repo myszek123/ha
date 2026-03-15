@@ -2,6 +2,8 @@ alias: Tesla Charging - Actuator
 description: >
   Reads should_charge / target_amps from sensor.myszolot_charge_reason (produced
   by the myszolot custom integration) and drives the physical charger entities.
+  Also manages shared-circuit sockets to prevent overload during charging.
+  To protect additional sockets/devices, add their entity_ids to both socket lists below.
   Replaces the old G12/price-threshold/override logic — all scheduling decisions
   now live in the integration coordinator.
 triggers:
@@ -9,6 +11,10 @@ triggers:
     trigger: state
   - minutes: /1
     trigger: time_pattern
+conditions:
+  - condition: state
+    entity_id: device_tracker.myszolot_location
+    state: home
 actions:
   - choose:
       - conditions:
@@ -19,7 +25,15 @@ actions:
           - action: switch.turn_off
             target:
               entity_id: switch.myszolot_charge
+          - action: switch.turn_on
+            target:
+              entity_id:
+                - switch.garage240socket
     default:
+      - action: switch.turn_off
+        target:
+          entity_id:
+            - switch.garage240socket
       - if:
           - condition: template
             value_template: "{{ not is_state('switch.autel_charge_control', 'on') }}"
