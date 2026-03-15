@@ -1,0 +1,33 @@
+alias: Tesla Charging - Set Charge Limit by Mode
+description: >
+  When the charge mode is changed to a trip mode (plan_trip, trip_now),
+  sets the charge limit to 95%. For all daily modes, sets it to 80%.
+  Only applies when the car is at home.
+triggers:
+  - entity_id: select.myszolot_charge_mode
+    trigger: state
+conditions:
+  - condition: state
+    entity_id: device_tracker.myszolot
+    state: home
+actions:
+  - choose:
+      - conditions:
+          - condition: state
+            entity_id: select.myszolot_charge_mode
+            state:
+              - plan_trip
+              - trip_now
+        sequence:
+          - action: number.set_value
+            target:
+              entity_id: number.myszolot_charge_limit
+            data:
+              value: 95
+    default:
+      - action: number.set_value
+        target:
+          entity_id: number.myszolot_charge_limit
+        data:
+          value: 80
+mode: single

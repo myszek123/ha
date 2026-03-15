@@ -1,4 +1,4 @@
-alias: Tesla Charging - Actuator
+alias: Tesla Charging - Main Automation
 description: >
   Reads should_charge / target_amps from sensor.myszolot_charge_reason (produced
   by the myszolot custom integration) and drives the physical charger entities.

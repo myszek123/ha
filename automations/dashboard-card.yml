@@ -15,6 +15,8 @@ cards:
         name: Next session
       - entity: binary_sensor.myszolot_charge_cable
         name: Cable connected
+  - type: markdown
+    content: "**Daily — 80%**"
   - type: grid
     columns: 3
     square: false
@@ -46,6 +48,12 @@ cards:
           service_data:
             entity_id: select.myszolot_charge_mode
             option: now_slow
+  - type: markdown
+    content: "**Trip — 95%**"
+  - type: grid
+    columns: 2
+    square: false
+    cards:
       - type: button
         name: Plan trip
         icon: mdi:map-marker-path
