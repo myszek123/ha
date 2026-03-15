@@ -1,0 +1,44 @@
+alias: Tesla Charging - Security - Autel lockdown when Myszolot away
+description: >
+  Security gate for the Autel charger. - Tesla away + override OFF -> force
+  Autel OFF - Override ON -> allow Autel ON - Tesla home + override OFF ->
+  neutral Uses slow watchdog to self-heal.
+triggers:
+  - entity_id:
+      - input_boolean.myszolot_charge_override
+    trigger: state
+  - minutes: /5
+    trigger: time_pattern
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ override_on }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ not charger_on }}"
+                sequence:
+                  - target:
+                      entity_id: switch.autel_charge_control
+                    action: switch.turn_on
+      - conditions:
+          - condition: template
+            value_template: "{{ (not is_home) and (not override_on) }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ charger_on }}"
+                sequence:
+                  - target:
+                      entity_id: switch.autel_charge_control
+                    action: switch.turn_off
+    default: []
+variables:
+  is_home: "{{ is_state('device_tracker.myszolot_location', 'home') }}"
+  override_on: "{{ is_state('input_boolean.myszolot_charge_override', 'on') }}"
+  charger_on: "{{ is_state('switch.autel_charge_control', 'on') }}"
+mode: single
+
