@@ -4,8 +4,13 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DOMAIN, INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC
 from .coordinator import MyszolotCoordinator
+
+_OPTIONAL_HELPERS = {
+    INPUT_BOOLEAN_LOCATION_OVERRIDE: "Toggle (on/off) — enables location override feature",
+    INPUT_NUMBER_CUSTOM_TARGET_SOC: "Number (50–100, step 1) — enables custom target SoC modes",
+}
 
 PLATFORMS = ["select", "sensor", "binary_sensor"]
 
@@ -20,6 +25,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    missing = [
+        f"- `{eid}`: {desc}"
+        for eid, desc in _OPTIONAL_HELPERS.items()
+        if hass.states.get(eid) is None
+    ]
+    if missing:
+        hass.components.persistent_notification.async_create(
+            "Optional helpers not found — some features are disabled until you create them "
+            "in **Settings → Devices & Services → Helpers**:\n\n" + "\n".join(missing),
+            title="Myszolot: optional helpers missing",
+            notification_id="myszolot_optional_helpers",
+        )
+
     return True
 
 

@@ -13,6 +13,7 @@ from .const import (
     DOMAIN,
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, DEVICE_TRACKER, SENSOR_CHARGING,
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
+    MODE_SMART_CUSTOM, MODE_NOW_CUSTOM,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS, CONF_SLOW_AMPS,
     CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC, CONF_TRIP_TARGET_SOC,
     CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD, CONF_PLAN_TRIP_DEADLINE_HOURS,
@@ -20,11 +21,12 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC, DEFAULT_TRIP_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_PLAN_TRIP_DEADLINE_HOURS,
+    INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
     REASON_MIN_SOC_FLOOR, REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW,
     REASON_TRIP_CHARGING_NOW, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
-    REASON_HOME_NOT_PLUGGED,
+    REASON_HOME_NOT_PLUGGED, REASON_CHARGING_NOW_CUSTOM,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -263,6 +265,22 @@ def determine_reason(
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
+    if mode == MODE_NOW_CUSTOM:
+        return REASON_CHARGING_NOW_CUSTOM, True, fast_amps
+
+    if mode == MODE_SMART_CUSTOM:
+        # No charge_start_soc gate — user explicitly chose a custom target
+        if schedule_all_prices_above_max:
+            return REASON_PRICE_TOO_HIGH, False, 0
+        if is_in_session(sessions, now_dt):
+            return REASON_SCHEDULED, True, fast_amps
+        ns = next_session(sessions, now_dt)
+        if ns:
+            return REASON_WAITING_FOR_SESSION, False, 0
+        if E_needed > 0:
+            return REASON_NO_ELIGIBLE_HOURS, False, 0
+        return REASON_TARGET_REACHED, False, 0
+
     # 8. Fallback: home but not plugged in
     return REASON_HOME_NOT_PLUGGED, False, 0
 
@@ -365,8 +383,20 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         mode = self._mode
 
+        # Read custom target SoC (soft dependency — defaults to 80 if helper missing)
+        custom_target_state = self.hass.states.get(INPUT_NUMBER_CUSTOM_TARGET_SOC)
+        custom_target_soc = int(float(custom_target_state.state)) if (
+            custom_target_state is not None
+            and custom_target_state.state not in _UNAVAILABLE
+        ) else default_target_soc
+
         # Determine target SoC for current mode
-        target_soc = trip_target_soc if mode in (MODE_PLAN_TRIP, MODE_TRIP_NOW) else default_target_soc
+        if mode in (MODE_PLAN_TRIP, MODE_TRIP_NOW):
+            target_soc = trip_target_soc
+        elif mode in (MODE_SMART_CUSTOM, MODE_NOW_CUSTOM):
+            target_soc = custom_target_soc
+        else:
+            target_soc = default_target_soc
 
         # Read external entity states
         now = datetime.now()
@@ -379,6 +409,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         location_state = self.hass.states.get(DEVICE_TRACKER)
         is_home = location_state is not None and location_state.state == "home"
+
+        override_state = self.hass.states.get(INPUT_BOOLEAN_LOCATION_OVERRIDE)
+        location_override_active = override_state is not None and override_state.state == "on"
+        is_home = is_home or location_override_active
 
         price_state = self.hass.states.get(SENSOR_PRICE)
         current_price = _parse_float(price_state) or 0.0
@@ -393,7 +427,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         all_prices = _parse_all_prices(price_state)
 
         # Append tomorrow's prices if available and in scheduled modes
-        if mode in (MODE_SMART, MODE_PLAN_TRIP):
+        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM):
             tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
             tomorrow_raw = _get_pstryk_tomorrow_prices(self.hass, tomorrow_str)
             for j, entry in enumerate(tomorrow_raw):
@@ -401,7 +435,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 all_prices.append({"hour": 24 + j, "price": price})
 
         # Auto-reset non-smart modes when SoC reaches target
-        if current_soc >= target_soc and mode != MODE_SMART:
+        if current_soc >= target_soc and mode not in (MODE_SMART, MODE_SMART_CUSTOM):
             _LOGGER.info(
                 "SoC %.1f%% >= target %d%%; resetting mode from %s to smart",
                 current_soc, target_soc, mode,
@@ -420,7 +454,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         sessions: list[dict] = []
         schedule_all_prices_above_max = False
 
-        if mode in (MODE_SMART, MODE_PLAN_TRIP) and E_needed > 0:
+        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM) and E_needed > 0:
             deadline_hours = plan_trip_deadline_hours if mode == MODE_PLAN_TRIP else 48
 
             # Check if hours exist at all (without price cap) vs with price cap
@@ -470,6 +504,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "should_charge": should_charge,
             "target_amps": target_amps,
             "cable_needed": cable_needed,
+            "location_override_active": location_override_active,
             "current_price": current_price,
             "current_soc": current_soc,
             "target_soc": target_soc,

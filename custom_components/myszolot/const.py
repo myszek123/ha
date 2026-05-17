@@ -6,6 +6,8 @@ SENSOR_SOC = "sensor.myszolot_battery_level"
 BINARY_SENSOR_CABLE = "binary_sensor.myszolot_charge_cable"
 DEVICE_TRACKER = "device_tracker.myszolot_location"
 SENSOR_CHARGING = "sensor.myszolot_charging"
+INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
+INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
 
 # Config keys
 CONF_CHARGER_PHASES = "charger_phases"
@@ -39,8 +41,10 @@ MODE_NOW_FAST = "now_fast"
 MODE_NOW_SLOW = "now_slow"
 MODE_PLAN_TRIP = "plan_trip"
 MODE_TRIP_NOW = "trip_now"
+MODE_SMART_CUSTOM = "smart_custom"
+MODE_NOW_CUSTOM = "now_custom"
 
-CHARGE_MODES = [MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW]
+CHARGE_MODES = [MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW, MODE_SMART_CUSTOM, MODE_NOW_CUSTOM]
 
 # Reasons
 REASON_OUTSIDE_CHARGING = "outside_charging"
@@ -56,3 +60,4 @@ REASON_SCHEDULED = "scheduled"
 REASON_WAITING_FOR_SESSION = "waiting_for_session"
 REASON_NO_ELIGIBLE_HOURS = "no_eligible_hours"
 REASON_HOME_NOT_PLUGGED = "home_not_plugged"
+REASON_CHARGING_NOW_CUSTOM = "charging_now_custom"

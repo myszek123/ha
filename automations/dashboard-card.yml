@@ -15,6 +15,8 @@ cards:
         name: Next session
       - entity: binary_sensor.myszolot_charge_cable
         name: Cable connected
+      - entity: input_boolean.myszolot_location_override
+        name: Location override
   - type: markdown
     content: "**Daily — 80%**"
   - type: grid
@@ -48,6 +50,34 @@ cards:
           service_data:
             entity_id: select.myszolot_charge_mode
             option: now_slow
+  - type: markdown
+    content: "**Custom target**"
+  - type: entities
+    entities:
+      - entity: input_number.myszolot_custom_target_soc
+        name: Target SoC %
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: button
+        name: Smart custom
+        icon: mdi:tune
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: smart_custom
+      - type: button
+        name: Charge now custom
+        icon: mdi:flash-auto
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: now_custom
   - type: markdown
     content: "**Trip — 95%**"
   - type: grid

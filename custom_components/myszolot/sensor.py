@@ -67,6 +67,7 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "target_soc": d.get("target_soc", 80),
             "E_needed": d.get("E_needed", 0.0),
             "next_session_start": ns.isoformat() if ns else None,
+            "location_override_active": d.get("location_override_active", False),
         }
 
 

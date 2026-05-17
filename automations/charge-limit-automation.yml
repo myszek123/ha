@@ -24,6 +24,18 @@ actions:
               entity_id: number.myszolot_charge_limit
             data:
               value: 95
+      - conditions:
+          - condition: state
+            entity_id: select.myszolot_charge_mode
+            state:
+              - smart_custom
+              - now_custom
+        sequence:
+          - action: number.set_value
+            target:
+              entity_id: number.myszolot_charge_limit
+            data:
+              value: "{{ states('input_number.myszolot_custom_target_soc') | int }}"
     default:
       - action: number.set_value
         target:
