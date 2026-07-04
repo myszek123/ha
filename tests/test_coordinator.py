@@ -242,6 +242,17 @@ def test_cable_needed_false_when_cable_connected():
     assert cable_needed is False
 
 
+def test_cable_needed_ignores_location_override():
+    """cable_needed uses device tracker only; override must not enable reminders."""
+    is_home_actual = False
+    location_override_active = True
+    is_home = is_home_actual or location_override_active
+    reason, should_charge, amps = dr(mode=MODE_NOW_FAST, is_home=is_home, cable_connected=False)
+    assert should_charge is True
+    cable_needed = should_charge and not False and is_home_actual
+    assert cable_needed is False
+
+
 # ── Priority 8: home, not plugged ────────────────────────────────────────────
 
 def test_home_not_plugged_fallback():

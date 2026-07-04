@@ -1,0 +1,14 @@
+alias: Myszolot - Reset location override after 12h
+description: >
+  Turns off the location override helper if left on for 12 hours, so charging
+  schedules do not keep treating the car as home after you leave the garage.
+triggers:
+  - trigger: state
+    entity_id: input_boolean.myszolot_location_override
+    to: "on"
+    for: "12:00:00"
+actions:
+  - action: input_boolean.turn_off
+    target:
+      entity_id: input_boolean.myszolot_location_override
+mode: single

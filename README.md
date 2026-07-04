@@ -160,7 +160,7 @@ Non-smart modes auto-reset to `smart` when `soc >= target_soc`. `smart` and `sma
 ### Binary Sensor: Cable Needed
 **Entity ID:** `binary_sensor.myszolot_cable_needed`
 
-On when `should_charge=True AND cable disconnected AND at home`. Used to trigger the cable reminder automation.
+On when `should_charge=True AND cable disconnected AND device tracker reports home`. Location override is **not** counted — override only affects charging schedules, not plug-in reminders. Used to trigger the cable reminder automation.
 
 ## External Entities (Read)
 
@@ -258,44 +258,11 @@ mode: single
 
 ### Cable Reminder Automation
 
-```yaml
-alias: Myszolot - Cable reminder
-triggers:
-  - trigger: template
-    value_template: >
-      {% set next = state_attr('sensor.myszolot_charge_reason', 'next_session_start') %}
-      {% if next %}
-        {{ (as_timestamp(next) - as_timestamp(now())) | int < 900 }}
-      {% else %}
-        false
-      {% endif %}
-conditions:
-  - "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
-  - condition: time
-    after: "06:00:00"
-    before: "23:30:00"
-actions:
-  - action: notify.mobile_app_your_phone
-    data:
-      message: "Myszolot: plug in to charge (session starts soon)"
-mode: single
-max_exceeded: silent
-```
+See `automations/cable-reminder.yml`. Requires `binary_sensor.myszolot_cable_needed` and `device_tracker.myszolot_location == home`.
 
 ### Location Override Auto-Reset
 
-```yaml
-alias: Myszolot - Reset location override after 12h
-triggers:
-  - trigger: state
-    entity_id: input_boolean.myszolot_location_override
-    to: "on"
-    for: "12:00:00"
-actions:
-  - action: input_boolean.turn_off
-    target:
-      entity_id: input_boolean.myszolot_location_override
-```
+See `automations/location-override-reset.yml`. Recommended — prevents override from staying on after you leave.
 
 ### Dashboard Card
 

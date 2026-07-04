@@ -24,8 +24,9 @@ class MyszolotCableNeededBinarySensor(CoordinatorEntity, BinarySensorEntity):
     """
     binary_sensor.myszolot_cable_needed
 
-    On when: should_charge=True AND cable not connected AND car is home.
-    Used as trigger for the pre-session cable reminder automation.
+    On when: should_charge=True AND cable not connected AND device tracker
+    reports home (location override is ignored). Used as trigger for the
+    pre-session cable reminder automation.
     """
 
     _attr_name = "Myszolot Cable Needed"

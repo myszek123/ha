@@ -408,11 +408,11 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         cable_connected = cable_state is not None and cable_state.state == "on"
 
         location_state = self.hass.states.get(DEVICE_TRACKER)
-        is_home = location_state is not None and location_state.state == "home"
+        is_home_actual = location_state is not None and location_state.state == "home"
 
         override_state = self.hass.states.get(INPUT_BOOLEAN_LOCATION_OVERRIDE)
         location_override_active = override_state is not None and override_state.state == "on"
-        is_home = is_home or location_override_active
+        is_home = is_home_actual or location_override_active
 
         price_state = self.hass.states.get(SENSOR_PRICE)
         current_price = _parse_float(price_state) or 0.0
@@ -495,7 +495,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         if reason == REASON_SCHEDULED:
             self._charging_started = True
 
-        cable_needed = should_charge and not cable_connected and is_home
+        # Reminders use actual tracker location only — override affects scheduling,
+        # not plug-in notifications (prevents false alerts when away with override on).
+        cable_needed = should_charge and not cable_connected and is_home_actual
         ns = next_session(sessions, now)
 
         return {

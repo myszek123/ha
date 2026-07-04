@@ -1,26 +1,37 @@
 alias: Tesla Charging - Cable reminder
 description: >
-  Sends a mobile notification when a charging session is starting within 15
-  minutes and the cable is not plugged in. Quiet between 23:30 and 06:00.
+  Notifies when charging is needed, the cable is unplugged, and the device
+  tracker reports the car at home. Uses binary_sensor.myszolot_cable_needed
+  (override is ignored for reminders). Quiet between 23:30 and 06:00.
 triggers:
-  - trigger: template
-    value_template: >-
-      {% set next = state_attr('sensor.myszolot_charge_reason', 'next_session_start') %}
-      {% if next %}
-        {{ (as_timestamp(next) - as_timestamp(now())) | int < 900 }}
-      {% else %}
-        false
-      {% endif %}
+  - trigger: time_pattern
+    minutes: "/2"
+  - trigger: state
+    entity_id: binary_sensor.myszolot_cable_needed
+    to: "on"
 conditions:
+  - condition: state
+    entity_id: binary_sensor.myszolot_cable_needed
+    state: "on"
+  - condition: state
+    entity_id: device_tracker.myszolot_location
+    state: home
   - condition: template
     value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
   - condition: time
     after: "06:00:00"
     before: "23:30:00"
 actions:
-  - action: notify.mobile_app_your_phone
+  - action: notify.mobile_app_j23
     data:
-      message: "Myszolot: plug in to charge (session starts in < 15 min)"
-      title: "EV charging reminder"
+      title: "Myszolot: EV charging reminder"
+      message: >-
+        Plug in the cable to charge.
+        {% set next = states('sensor.myszolot_next_session_start') %}
+        {% if next not in ['unknown', 'unavailable', 'none', ''] %}
+        Next session starts at {{ (next | as_timestamp) | timestamp_custom('%H:%M', local=True) }}.
+        {% else %}
+        Charging session is starting now.
+        {% endif %}
 mode: single
 max_exceeded: silent
