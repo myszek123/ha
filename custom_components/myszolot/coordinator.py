@@ -11,7 +11,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     DOMAIN,
-    SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, DEVICE_TRACKER, SENSOR_CHARGING,
+    SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
+    DEVICE_TRACKER, SENSOR_CHARGING,
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
     MODE_SMART_CUSTOM, MODE_NOW_CUSTOM,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS, CONF_SLOW_AMPS,
@@ -285,6 +286,22 @@ def determine_reason(
     return REASON_HOME_NOT_PLUGGED, False, 0
 
 
+def _garage_car_present(hass: HomeAssistant) -> bool | None:
+    """Return True/False from vision sensor, or None when unavailable."""
+    state = hass.states.get(BINARY_SENSOR_GARAGE_CAR)
+    if state is None or state.state.lower() in _UNAVAILABLE:
+        return None
+    return state.state == "on"
+
+
+def _car_in_garage(hass: HomeAssistant, tracker_home: bool) -> bool:
+    """Prefer Frigate spot classifier; fall back to device tracker."""
+    garage = _garage_car_present(hass)
+    if garage is not None:
+        return garage
+    return tracker_home
+
+
 def _parse_float(state_obj, attr: str | None = None) -> float | None:
     """Safely read a float from a state object or its attribute."""
     if state_obj is None:
@@ -495,9 +512,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         if reason == REASON_SCHEDULED:
             self._charging_started = True
 
-        # Reminders use actual tracker location only — override affects scheduling,
-        # not plug-in notifications (prevents false alerts when away with override on).
-        cable_needed = should_charge and not cable_connected and is_home_actual
+        # Reminders prefer garage vision; override affects scheduling, not notifications.
+        car_in_garage = _car_in_garage(self.hass, is_home_actual)
+        cable_needed = should_charge and not cable_connected and car_in_garage
         ns = next_session(sessions, now)
 
         return {

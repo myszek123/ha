@@ -1,8 +1,8 @@
 alias: Tesla Charging - Cable reminder
 description: >
-  Notifies when charging is needed, the cable is unplugged, and the device
-  tracker reports the car at home. Uses binary_sensor.myszolot_cable_needed
-  (override is ignored for reminders). Quiet between 23:30 and 06:00.
+  Notifies when charging is needed, the cable is unplugged, and the car is
+  in the garage (Frigate spot classifier when available, else device tracker).
+  Uses binary_sensor.myszolot_cable_needed. Quiet between 23:30 and 06:00.
 triggers:
   - trigger: time_pattern
     minutes: "/2"
@@ -13,9 +13,11 @@ conditions:
   - condition: state
     entity_id: binary_sensor.myszolot_cable_needed
     state: "on"
-  - condition: state
-    entity_id: device_tracker.myszolot_location
-    state: home
+  - condition: template
+    value_template: >-
+      {{ is_state('binary_sensor.garage_car_present', 'on')
+         or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
+             and is_state('device_tracker.myszolot_location', 'home')) }}
   - condition: template
     value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
   - condition: time
