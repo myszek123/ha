@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up xAI Text-to-Speech",
+        "description": "Enter your xAI API key and preferred defaults. You can change voice and language per TTS call.",
+        "data": {
+          "api_key": "API Key",
+          "voice": "Default Voice",
+          "language": "Default Language"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to xAI API. Check your network.",
+      "invalid_auth": "Invalid API key."
+    },
+    "abort": {
+      "already_configured": "xAI TTS is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "xAI TTS Options",
+        "data": {
+          "voice": "Default Voice",
+          "language": "Default Language"
+        }
+      }
+    }
+  }
+}

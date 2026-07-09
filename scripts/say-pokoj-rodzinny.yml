@@ -1,0 +1,41 @@
+alias: "Say on family room soundbar"
+description: "Wake Yamaha soundbar if needed, then speak via xAI Grok TTS."
+mode: single
+fields:
+  message:
+    description: Text to speak
+    required: true
+    example: "Test z Home Assistanta"
+  target:
+    description: soundbar or tv
+    default: soundbar
+    selector:
+      select:
+        options:
+          - soundbar
+          - tv
+sequence:
+  - action: media_player.turn_on
+    target:
+      entity_id: >-
+        {% if target == "tv" %}
+          media_player.lg_webos_tv_f532
+        {% else %}
+          media_player.pokoj_rodzinny
+        {% endif %}
+  - delay:
+      seconds: 3
+  - action: tts.speak
+    target:
+      entity_id: tts.xai_tts
+    data:
+      media_player_entity_id: >-
+        {% if target == "tv" %}
+          media_player.lg_webos_tv_f532
+        {% else %}
+          media_player.pokoj_rodzinny
+        {% endif %}
+      message: "{{ message }}"
+      language: pl
+      options:
+        voice: ara

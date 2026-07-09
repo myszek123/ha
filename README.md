@@ -268,6 +268,57 @@ See `automations/location-override-reset.yml`. Recommended — prevents override
 
 Copy `automations/dashboard-card.yml` into Lovelace (Edit dashboard → Add card → Manual card).
 
+## Voice announcements (xAI Grok TTS)
+
+Speak on the family-room Yamaha soundbar (`media_player.pokoj_rodzinny`) or LG TV via Grok TTS.
+
+### Requirements
+
+- Yamaha YAS-408 with **network standby** enabled (factory default)
+- xAI API key with TTS credits ([console.x.ai](https://console.x.ai))
+- Home Assistant 2024.10+
+
+### Install `xai_tts` integration
+
+Vendored in this repo (upstream: [ha-xai-tts](https://github.com/therealakahn/ha-xai-tts), with a small Polish/`auto` language patch — see `custom_components/xai_tts/UPSTREAM.md`).
+
+```bash
+rsync -av custom_components/xai_tts/ root@192.168.1.201:/opt/ha/config/custom_components/xai_tts/
+ssh root@192.168.1.201 "docker restart ha"
+```
+
+Then in HA UI: **Settings → Devices & Services → Add Integration → xAI Text-to-Speech** — enter API key, pick voice (default **Ara**), language **auto** or **pl**.
+
+Creates entity `tts.xai_tts`. **Do not commit API keys.**
+
+### Install `say_pokoj_rodzinny` script
+
+See `scripts/README.md`. Merge `scripts/say-pokoj-rodzinny.yml` into live `scripts.yaml` as key `say_pokoj_rodzinny`, then reload scripts.
+
+### Usage
+
+**Developer tools → Actions → YAML mode:**
+
+```yaml
+action: script.say_pokoj_rodzinny
+data:
+  message: "Auto w garażu."
+  target: soundbar   # or tv
+```
+
+**From an automation:**
+
+```yaml
+- action: script.say_pokoj_rodzinny
+  data:
+    message: "Podłącz kabel ładowania."
+    target: soundbar
+```
+
+### Optional: agent skill
+
+`saymeviaha` (`~/.claude/skills/saymeviaha/`) calls this script from Claude/Grok — personal tooling, not in this repo. Phone push equivalent: `notifymeviaha`.
+
 ## Algorithm: Fractional Knapsack + Continuous Sessions
 
 1. **Build Schedule**: Select cheapest eligible hours until energy need is met

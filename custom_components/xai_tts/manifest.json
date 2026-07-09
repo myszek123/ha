@@ -1,0 +1,10 @@
+{
+  "domain": "xai_tts",
+  "name": "xAI Text-to-Speech",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech",
+  "iot_class": "cloud_polling",
+  "requirements": ["aiohttp>=3.9.0"],
+  "version": "1.0.0"
+}

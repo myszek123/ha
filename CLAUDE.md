@@ -25,7 +25,10 @@ This repository is organized for storing Claude Code agents and automations:
 
 - `.claude/agents/` - Custom agents that can be invoked with the Agent tool
 - `.claude/commands/` - Custom commands and shortcuts for Claude Code workflows
-- `automations/` - Automation scripts and workflows
+- `automations/` - Automation YAML (one file per automation)
+- `scripts/` - Reusable HA scripts (merge into live `scripts.yaml` on deploy)
+- `custom_components/myszolot/` - EV charging HACS integration
+- `custom_components/xai_tts/` - Vendored Grok TTS integration (see UPSTREAM.md)
 
 ## Getting Started
 
