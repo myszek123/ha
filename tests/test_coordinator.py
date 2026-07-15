@@ -5,15 +5,20 @@ from datetime import datetime
 
 import pytest
 
-from custom_components.myszolot.coordinator import determine_reason, is_in_session
+from custom_components.myszolot.coordinator import (
+    determine_reason,
+    is_in_session,
+    build_timed_session,
+)
 from custom_components.myszolot.const import (
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
+    MODE_TIMED,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING,
     REASON_TARGET_REACHED, REASON_MIN_SOC_FLOOR,
     REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW, REASON_TRIP_CHARGING_NOW,
     REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
-    REASON_HOME_NOT_PLUGGED,
+    REASON_HOME_NOT_PLUGGED, REASON_TIMED_SESSION_DONE,
 )
 
 # ── Default parameters shared across most tests ───────────────────────────────
@@ -339,4 +344,67 @@ def test_charging_started_false_allows_soc_sufficient():
         charging_started=False,  # Flag is False → allow soc_sufficient check
     )
     assert reason == REASON_SOC_SUFFICIENT
+    assert should_charge is False
+
+
+# ── Timed mode ────────────────────────────────────────────────────────────────
+
+def test_build_timed_session_today_before_window():
+    now = datetime(2024, 1, 15, 22, 0)
+    sessions = build_timed_session(2, 180, now, max_charge_rate_kW=6.9, current_price=0.3)
+    assert len(sessions) == 1
+    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)  # next calendar day after midnight? 
+    # start_hour=2, now=22:00 same day → window is still "tomorrow morning" relative to evening
+    # Actually start = today 02:00, end = today 05:00, now 22:00 >= end → roll to tomorrow
+    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)
+    assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
+    assert sessions[0]["total_kWh"] == round(6.9 * 3, 4)
+
+
+def test_build_timed_session_during_window():
+    now = datetime(2024, 1, 15, 3, 30)
+    sessions = build_timed_session(2, 180, now)
+    assert len(sessions) == 1
+    assert sessions[0]["start"] == datetime(2024, 1, 15, 2, 0)
+    assert sessions[0]["end"] == datetime(2024, 1, 15, 5, 0)
+    assert is_in_session(sessions, now) is True
+
+
+def test_build_timed_session_after_window_rolls_tomorrow():
+    now = datetime(2024, 1, 15, 6, 0)
+    sessions = build_timed_session(2, 180, now)
+    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)
+    assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
+
+
+def test_build_timed_session_zero_duration():
+    assert build_timed_session(2, 0, datetime(2024, 1, 15, 10, 0)) == []
+
+
+def test_timed_mode_waiting():
+    now = datetime(2024, 1, 15, 22, 0)
+    sessions = [_session(datetime(2024, 1, 16, 2, 0), datetime(2024, 1, 16, 5, 0))]
+    reason, should_charge, amps = dr(
+        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=55,
+    )
+    assert reason == REASON_WAITING_FOR_SESSION
+    assert should_charge is False
+    assert amps == 0
+
+
+def test_timed_mode_in_session_charges_fast():
+    now = datetime(2024, 1, 15, 3, 0)
+    sessions = [_session(datetime(2024, 1, 15, 2, 0), datetime(2024, 1, 15, 5, 0))]
+    reason, should_charge, amps = dr(
+        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=72,
+        charge_start_soc=69,  # high SoC must NOT block timed
+    )
+    assert reason == REASON_SCHEDULED
+    assert should_charge is True
+    assert amps == DEFAULTS["fast_amps"]
+
+
+def test_timed_mode_no_session_done():
+    reason, should_charge, amps = dr(mode=MODE_TIMED, sessions=[], current_soc=50)
+    assert reason == REASON_TIMED_SESSION_DONE
     assert should_charge is False

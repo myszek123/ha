@@ -4,12 +4,20 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC
+from .const import (
+    DOMAIN,
+    INPUT_BOOLEAN_LOCATION_OVERRIDE,
+    INPUT_NUMBER_CUSTOM_TARGET_SOC,
+    INPUT_NUMBER_TIMED_START_HOUR,
+    INPUT_NUMBER_TIMED_DURATION_MINUTES,
+)
 from .coordinator import MyszolotCoordinator
 
 _OPTIONAL_HELPERS = {
     INPUT_BOOLEAN_LOCATION_OVERRIDE: "Toggle (on/off) — enables location override feature",
     INPUT_NUMBER_CUSTOM_TARGET_SOC: "Number (50–100, step 1) — enables custom target SoC modes",
+    INPUT_NUMBER_TIMED_START_HOUR: "Number (0–23, step 1) — start hour for timed mode (default 2)",
+    INPUT_NUMBER_TIMED_DURATION_MINUTES: "Number (15–480, step 15) — duration minutes for timed mode (default 180)",
 }
 
 PLATFORMS = ["select", "sensor", "binary_sensor"]

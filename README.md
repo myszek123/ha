@@ -9,7 +9,7 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 - **Smart Mode**: Fractional knapsack scheduling for cheapest available hours across 48h window
 - **Custom Target Modes**: Schedule or charge immediately to any SoC % you choose
 - **Time-Aware**: Uses hourly electricity price forecasts to choose optimal charging windows
-- **Multiple Charge Modes**: Smart, Fast Now, Slow Now, Plan Trip, Trip Now, Smart Custom, Now Custom
+- **Multiple Charge Modes**: Smart, Fast Now, Slow Now, Plan Trip, Trip Now, Smart Custom, Now Custom, Timed
 - **Battery Health**: Respects minimum SoC emergency floor and configurable target SoC
 - **Price Filter**: Skip charging if all eligible hours exceed max price threshold
 - **Continuous Sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
@@ -91,6 +91,28 @@ Sets the target SoC % used by the `smart_custom` and `now_custom` charge modes. 
 
 ---
 
+### Timed Window (start hour + duration)
+
+**Entities:**
+- `input_number.myszolot_timed_start_hour` — Number (0–23, step 1), default **2**
+- `input_number.myszolot_timed_duration_minutes` — Number (15–480, step 15), default **180**
+
+One-shot fixed clock window: charge at fast amps from `start_hour:00` for `duration` minutes (e.g. start 2, duration 180 → 02:00–05:00). Ignores price optimisation and the smart SoC gate — useful when the car will leave early and smart mode would otherwise schedule later (or never) cheap hours.
+
+**To create:**
+1. Settings → Helpers → + Create helper → Number → Name: `myszolot_timed_start_hour`, Min: 0, Max: 23, Step: 1
+2. Settings → Helpers → + Create helper → Number → Name: `myszolot_timed_duration_minutes`, Min: 15, Max: 480, Step: 15, Unit: min
+
+**Behaviour:**
+- If helpers are missing, defaults are start hour **2** and duration **180** minutes
+- Set start hour + duration **before** selecting `timed` mode
+- If today's window already ended, the next window is tomorrow
+- After the active window ends, mode auto-resets to `smart`
+- Also auto-resets if SoC reaches the daily target (80%)
+- Charge limit stays at 80% (same as daily modes)
+
+---
+
 ## Configuration
 
 ### Config Entry Options
@@ -129,8 +151,9 @@ max_charge_rate_kW = fast_amps × voltage × charger_phases / 1000
 | `trip_now` | 95% | Fast amps immediately | None |
 | `smart_custom` | Custom % | Cheapest hours | 48h window, no SoC gate |
 | `now_custom` | Custom % | Fast amps immediately | None |
+| `timed` | 80% (ceiling) | Fast amps in window | Fixed start hour + duration minutes |
 
-Non-smart modes auto-reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset.
+Non-smart modes auto-reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset. `timed` also auto-resets when its window ends.
 
 ### Sensor: Charge Reason
 **Entity ID:** `sensor.myszolot_charge_reason`
@@ -173,6 +196,8 @@ On when `should_charge=True AND cable disconnected AND device tracker reports ho
 | `sensor.myszolot_charging` | External charging status (charging / idle) |
 | `input_boolean.myszolot_location_override` | Optional — location override flag |
 | `input_number.myszolot_custom_target_soc` | Optional — custom target SoC % |
+| `input_number.myszolot_timed_start_hour` | Optional — timed mode start hour (0–23) |
+| `input_number.myszolot_timed_duration_minutes` | Optional — timed mode duration (minutes) |
 
 ## External Entities (Write)
 
@@ -222,6 +247,14 @@ The integration does not write to these — create automations based on `sensor.
 - **Speed:** Fast amps immediately, no price optimisation
 - **Also sets:** Tesla charge limit to custom %
 - **Use case:** Charge immediately to a specific % (not 80%, not 95%)
+
+### Timed
+- **Window:** `input_number.myszolot_timed_start_hour` + `input_number.myszolot_timed_duration_minutes` (see [helpers](#timed-window-start-hour--duration))
+- **Speed:** Fast amps during the window only
+- **No price optimisation:** charges regardless of PLN/kWh in that window
+- **No SoC gate:** ignores `charge_start_soc` (still stops / resets at daily target 80%)
+- **One-shot:** after the window ends, mode resets to `smart`
+- **Use case:** Car leaves early tomorrow; force a top-up in the known-cheap overnight hours (e.g. 02:00 for 180 min) even though smart mode cannot plan around a morning departure
 
 ## Example Automations
 
@@ -340,7 +373,7 @@ Schedule rebuilds on: SoC change, location change, cable plug/unplug, price upda
 
 ### Mode Auto-Reset
 
-Non-smart modes (`now_fast`, `now_slow`, `trip_now`, `now_custom`) reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset.
+Non-smart modes (`now_fast`, `now_slow`, `trip_now`, `now_custom`, `plan_trip`, `timed`) reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset. `timed` also resets when its fixed window ends.
 
 ### Charging Started Flag
 

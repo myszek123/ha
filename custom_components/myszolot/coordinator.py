@@ -14,7 +14,7 @@ from .const import (
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
     DEVICE_TRACKER, SENSOR_CHARGING,
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
-    MODE_SMART_CUSTOM, MODE_NOW_CUSTOM,
+    MODE_SMART_CUSTOM, MODE_NOW_CUSTOM, MODE_TIMED,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS, CONF_SLOW_AMPS,
     CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC, CONF_TRIP_TARGET_SOC,
     CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD, CONF_PLAN_TRIP_DEADLINE_HOURS,
@@ -22,12 +22,14 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC, DEFAULT_TRIP_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_PLAN_TRIP_DEADLINE_HOURS,
+    DEFAULT_TIMED_START_HOUR, DEFAULT_TIMED_DURATION_MINUTES,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
+    INPUT_NUMBER_TIMED_START_HOUR, INPUT_NUMBER_TIMED_DURATION_MINUTES,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
     REASON_MIN_SOC_FLOOR, REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW,
     REASON_TRIP_CHARGING_NOW, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
-    REASON_HOME_NOT_PLUGGED, REASON_CHARGING_NOW_CUSTOM,
+    REASON_HOME_NOT_PLUGGED, REASON_CHARGING_NOW_CUSTOM, REASON_TIMED_SESSION_DONE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -192,6 +194,48 @@ def next_session(sessions: list[dict], now_dt: datetime) -> dict | None:
     return min(future, key=lambda s: s["start"]) if future else None
 
 
+def build_timed_session(
+    start_hour: int,
+    duration_minutes: int,
+    now_dt: datetime,
+    max_charge_rate_kW: float = 0.0,
+    current_price: float = 0.0,
+) -> list[dict]:
+    """
+    Build a single fixed-window charging session.
+
+    Starts at start_hour:00 local time for duration_minutes.
+    If today's window has already fully ended, schedule tomorrow's window.
+    If we are currently inside today's window, keep today's session.
+    """
+    if duration_minutes <= 0:
+        return []
+
+    start_hour = max(0, min(23, int(start_hour)))
+    duration_minutes = int(duration_minutes)
+
+    start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    end = start + timedelta(minutes=duration_minutes)
+
+    # Window fully over → roll to tomorrow
+    if now_dt >= end:
+        start = start + timedelta(days=1)
+        end = start + timedelta(minutes=duration_minutes)
+
+    total_kWh = round(max_charge_rate_kW * duration_minutes / 60.0, 4)
+    total_cost = round(total_kWh * current_price, 4)
+
+    return [
+        {
+            "start": start,
+            "end": end,
+            "slots": [],
+            "total_kWh": total_kWh,
+            "total_cost": total_cost,
+        }
+    ]
+
+
 def determine_reason(
     mode: str,
     is_home: bool,
@@ -282,6 +326,16 @@ def determine_reason(
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
+    if mode == MODE_TIMED:
+        # Fixed clock window — no price gate, no charge_start_soc gate.
+        # SoC target is only a ceiling (coordinator auto-resets when reached).
+        if is_in_session(sessions, now_dt):
+            return REASON_SCHEDULED, True, fast_amps
+        ns = next_session(sessions, now_dt)
+        if ns:
+            return REASON_WAITING_FOR_SESSION, False, 0
+        return REASON_TIMED_SESSION_DONE, False, 0
+
     # 8. Fallback: home but not plugged in
     return REASON_HOME_NOT_PLUGGED, False, 0
 
@@ -347,6 +401,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
         self._charging_started: bool = False
+        self._timed_was_in_session: bool = False
         self._unsub_listeners: list = []
 
     @property
@@ -354,6 +409,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         return self._mode
 
     def set_mode(self, mode: str) -> None:
+        if mode != self._mode:
+            # Fresh mode selection clears one-shot timed tracking
+            self._timed_was_in_session = False
         self._mode = mode
 
     async def async_setup(self) -> None:
@@ -406,6 +464,19 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             custom_target_state is not None
             and custom_target_state.state not in _UNAVAILABLE
         ) else default_target_soc
+
+        # Timed-mode window helpers (soft dependency)
+        timed_start_state = self.hass.states.get(INPUT_NUMBER_TIMED_START_HOUR)
+        timed_start_hour = int(float(timed_start_state.state)) if (
+            timed_start_state is not None
+            and timed_start_state.state not in _UNAVAILABLE
+        ) else DEFAULT_TIMED_START_HOUR
+
+        timed_duration_state = self.hass.states.get(INPUT_NUMBER_TIMED_DURATION_MINUTES)
+        timed_duration_minutes = int(float(timed_duration_state.state)) if (
+            timed_duration_state is not None
+            and timed_duration_state.state not in _UNAVAILABLE
+        ) else DEFAULT_TIMED_DURATION_MINUTES
 
         # Determine target SoC for current mode
         if mode in (MODE_PLAN_TRIP, MODE_TRIP_NOW):
@@ -460,6 +531,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._mode = MODE_SMART
             mode = MODE_SMART
             target_soc = default_target_soc
+            self._timed_was_in_session = False
 
         # Clear charging_started flag when target is reached
         if current_soc >= target_soc:
@@ -489,6 +561,30 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 schedule_all_prices_above_max = True
 
             sessions = compute_sessions(capped, now.date())
+
+        elif mode == MODE_TIMED:
+            sessions = build_timed_session(
+                timed_start_hour,
+                timed_duration_minutes,
+                now,
+                max_charge_rate_kW=max_charge_rate_kW,
+                current_price=current_price,
+            )
+            # One-shot: after the window we were inside ends, return to smart
+            in_timed = is_in_session(sessions, now)
+            if self._timed_was_in_session and not in_timed:
+                _LOGGER.info(
+                    "Timed session ended (start_hour=%s, duration=%s min); "
+                    "resetting mode to smart",
+                    timed_start_hour, timed_duration_minutes,
+                )
+                self._mode = MODE_SMART
+                mode = MODE_SMART
+                target_soc = default_target_soc
+                sessions = []
+                self._timed_was_in_session = False
+            else:
+                self._timed_was_in_session = in_timed
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,

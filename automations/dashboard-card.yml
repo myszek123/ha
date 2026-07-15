@@ -79,6 +79,27 @@ cards:
             entity_id: select.myszolot_charge_mode
             option: now_custom
   - type: markdown
+    content: "**Timed window — fixed hours (e.g. cheap 2–5)**"
+  - type: entities
+    entities:
+      - entity: input_number.myszolot_timed_start_hour
+        name: Start hour
+      - entity: input_number.myszolot_timed_duration_minutes
+        name: Duration (min)
+  - type: grid
+    columns: 1
+    square: false
+    cards:
+      - type: button
+        name: Timed charge
+        icon: mdi:clock-start
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: timed
+  - type: markdown
     content: "**Trip — 95%**"
   - type: grid
     columns: 2

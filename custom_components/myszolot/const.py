@@ -9,6 +9,8 @@ DEVICE_TRACKER = "device_tracker.myszolot_location"
 SENSOR_CHARGING = "sensor.myszolot_charging"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
+INPUT_NUMBER_TIMED_START_HOUR = "input_number.myszolot_timed_start_hour"
+INPUT_NUMBER_TIMED_DURATION_MINUTES = "input_number.myszolot_timed_duration_minutes"
 
 # Config keys
 CONF_CHARGER_PHASES = "charger_phases"
@@ -44,8 +46,22 @@ MODE_PLAN_TRIP = "plan_trip"
 MODE_TRIP_NOW = "trip_now"
 MODE_SMART_CUSTOM = "smart_custom"
 MODE_NOW_CUSTOM = "now_custom"
+MODE_TIMED = "timed"
 
-CHARGE_MODES = [MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW, MODE_SMART_CUSTOM, MODE_NOW_CUSTOM]
+CHARGE_MODES = [
+    MODE_SMART,
+    MODE_NOW_FAST,
+    MODE_NOW_SLOW,
+    MODE_PLAN_TRIP,
+    MODE_TRIP_NOW,
+    MODE_SMART_CUSTOM,
+    MODE_NOW_CUSTOM,
+    MODE_TIMED,
+]
+
+# Timed-mode helper defaults (used when helpers are missing)
+DEFAULT_TIMED_START_HOUR = 2
+DEFAULT_TIMED_DURATION_MINUTES = 180
 
 # Reasons
 REASON_OUTSIDE_CHARGING = "outside_charging"
@@ -62,3 +78,4 @@ REASON_WAITING_FOR_SESSION = "waiting_for_session"
 REASON_NO_ELIGIBLE_HOURS = "no_eligible_hours"
 REASON_HOME_NOT_PLUGGED = "home_not_plugged"
 REASON_CHARGING_NOW_CUSTOM = "charging_now_custom"
+REASON_TIMED_SESSION_DONE = "timed_session_done"
