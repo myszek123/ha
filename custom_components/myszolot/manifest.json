@@ -1,7 +1,7 @@
 {
   "domain": "myszolot",
   "name": "Myszolot Charging",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "config_flow": true,
   "documentation": "https://github.com/your-repo/ha_myszolot",
   "requirements": [],

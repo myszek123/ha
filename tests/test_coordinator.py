@@ -444,3 +444,16 @@ def test_timed_mode_no_session_done():
     reason, should_charge, amps = dr(mode=MODE_TIMED, sessions=[], current_soc=50)
     assert reason == REASON_TIMED_SESSION_DONE
     assert should_charge is False
+
+
+def test_timed_window_past_end_is_not_in_session():
+    """After locked window end, is_in_session is false (coordinator resets to smart)."""
+    now = datetime(2024, 1, 15, 5, 0)
+    sessions = [_session(datetime(2024, 1, 15, 2, 0), datetime(2024, 1, 15, 5, 0))]
+    # end is exclusive in is_in_session (start <= now < end)
+    assert is_in_session(sessions, now) is False
+    reason, should_charge, amps = dr(
+        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=60,
+    )
+    # Still in mode timed with a past session → not scheduled, waiting or done
+    assert should_charge is False

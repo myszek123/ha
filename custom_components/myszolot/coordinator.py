@@ -475,7 +475,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
         self._charging_started: bool = False
-        self._timed_was_in_session: bool = False
+        # One-shot timed window: (start, end) locked in when mode is selected
+        self._timed_window: tuple[datetime, datetime] | None = None
         self._unsub_listeners: list = []
 
     @property
@@ -485,7 +486,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
     def set_mode(self, mode: str) -> None:
         if mode != self._mode:
             # Fresh mode selection clears one-shot timed tracking
-            self._timed_was_in_session = False
+            self._timed_window = None
         self._mode = mode
 
     async def async_setup(self) -> None:
@@ -615,7 +616,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._mode = MODE_SMART
             mode = MODE_SMART
             target_soc = default_target_soc
-            self._timed_was_in_session = False
+            self._timed_window = None
 
         # Clear charging_started flag when target is reached
         if current_soc >= target_soc:
@@ -647,33 +648,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             sessions = compute_sessions(capped, now.date())
 
         elif mode == MODE_TIMED:
-            # One-shot window: once we have been inside the session and it ends,
-            # reset to smart (do not roll to tomorrow).
-            if self._timed_was_in_session:
-                ended = build_timed_session(
-                    timed_start_hour,
-                    timed_duration_minutes,
-                    now,
-                    max_charge_rate_kW=max_charge_rate_kW,
-                    current_price=current_price,
-                    all_prices=all_prices,
-                    roll_if_ended=False,
-                )
-                if not ended or not is_in_session(ended, now):
-                    _LOGGER.info(
-                        "Timed session ended (start_hour=%s, duration=%s min); "
-                        "resetting mode to smart",
-                        timed_start_hour, timed_duration_minutes,
-                    )
-                    self._mode = MODE_SMART
-                    mode = MODE_SMART
-                    target_soc = default_target_soc
-                    sessions = []
-                    self._timed_was_in_session = False
-                else:
-                    sessions = ended
-            if mode == MODE_TIMED:
-                sessions = build_timed_session(
+            # One-shot: lock the next window on first evaluation after selecting
+            # timed; when that end time is reached, always return to smart.
+            if self._timed_window is None:
+                candidate = build_timed_session(
                     timed_start_hour,
                     timed_duration_minutes,
                     now,
@@ -682,7 +660,47 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                     all_prices=all_prices,
                     roll_if_ended=True,
                 )
-                self._timed_was_in_session = is_in_session(sessions, now)
+                if candidate:
+                    self._timed_window = (candidate[0]["start"], candidate[0]["end"])
+                    _LOGGER.info(
+                        "Timed window locked: %s → %s",
+                        self._timed_window[0], self._timed_window[1],
+                    )
+
+            if self._timed_window is not None:
+                win_start, win_end = self._timed_window
+                if now >= win_end:
+                    _LOGGER.info(
+                        "Timed session ended at %s; resetting mode to smart",
+                        win_end,
+                    )
+                    self._mode = MODE_SMART
+                    mode = MODE_SMART
+                    target_soc = default_target_soc
+                    sessions = []
+                    self._timed_window = None
+                else:
+                    kwh, cost = estimate_window_cost(
+                        win_start,
+                        win_end,
+                        max_charge_rate_kW,
+                        all_prices,
+                        current_price,
+                        now.date(),
+                    )
+                    duration = int(round((win_end - win_start).total_seconds() / 60))
+                    sessions = [
+                        {
+                            "start": win_start,
+                            "end": win_end,
+                            "slots": [],
+                            "total_kWh": kwh,
+                            "total_cost": cost,
+                            "duration_minutes": duration,
+                        }
+                    ]
+            else:
+                sessions = []
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,

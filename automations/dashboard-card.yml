@@ -1,11 +1,8 @@
-# Myszolot charging panel for Overview (sections-friendly).
-# Native cards only: tile + markdown + entities + grid (no HACS UI packs required).
-#
-# Live: Overview → InternalLinks section "Myszolot Charging"
-# Paste as a vertical-stack, or use the sections version below.
+# Myszolot charging panel for Overview.
+# Status tiles + plan summary (no duplicate session tiles).
 type: vertical-stack
 cards:
-  # ── Status row ────────────────────────────────────────────────────────────
+  # ── Status: Battery | Mode / Decision | Cable ─────────────────────────────
   - type: grid
     columns: 2
     square: false
@@ -27,53 +24,81 @@ cards:
         name: Cable
         icon: mdi:ev-plug-type2
 
-  # ── Plan summary (templated) ──────────────────────────────────────────────
+  # ── Plan summary (single place for window / length / SoC / cost) ──────────
   - type: markdown
     content: >
       {% set mode = states('select.myszolot_charge_mode') %}
+
       {% set reason = states('sensor.myszolot_charge_reason') %}
+
       {% set soc = states('sensor.myszolot_battery_level') %}
+
       {% set end_soc = states('sensor.myszolot_expected_end_soc') %}
+
       {% set cost = states('sensor.myszolot_charge_schedule') %}
+
       {% set mins = states('sensor.myszolot_planned_session_duration') | int(0) %}
+
       {% set amps = state_attr('sensor.myszolot_charge_reason', 'charge_amps') %}
+
       {% set kwh = state_attr('sensor.myszolot_charge_schedule', 'planned_kwh') %}
+
       {% set start = state_attr('sensor.myszolot_charge_schedule', 'planned_session_start') %}
+
       {% set end = state_attr('sensor.myszolot_charge_schedule', 'planned_session_end') %}
+
       {% set hours = (mins // 60) %}
+
       {% set rem = (mins % 60) %}
+
       ### Plan
+
       **{{ mode }}** · `{{ reason }}`
 
-      {% if mins > 0 %}
-      - **Window:** {% if start %}{{ as_timestamp(start) | timestamp_custom('%H:%M', true) }}–{{ as_timestamp(end) | timestamp_custom('%H:%M', true) }}{% else %}—{% endif %}
-      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ rem }}min · **{{ amps }}A** (~{{ kwh }} kWh)
-      - **SoC:** {{ soc }}% → **~{{ end_soc }}%**
-      - **Planned cost:** ~**{{ cost }} PLN**
+
+      {% if mins > 0 and start %}
+
+      {% set secs = as_timestamp(start) - as_timestamp(now()) %}
+
+      {% if secs > 0 %}
+
+      {% set rel_h = (secs // 3600) | int %}
+
+      {% set rel_m = ((secs % 3600) // 60) | int %}
+
+      {% if rel_h > 0 %}
+
+      {% set rel = 'in ' ~ rel_h ~ 'h' ~ (rel_m ~ 'm' if rel_m else '') %}
+
       {% else %}
-      _No session planned right now._
+
+      {% set rel = 'in ' ~ rel_m ~ ' min' %}
+
       {% endif %}
 
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-      - type: tile
-        entity: sensor.myszolot_next_session_start
-        name: Session start
-        icon: mdi:clock-start
-      - type: tile
-        entity: sensor.myszolot_expected_end_soc
-        name: Expected end SoC
-        icon: mdi:battery-charging-80
-      - type: tile
-        entity: sensor.myszolot_planned_session_duration
-        name: Session length
-        icon: mdi:timer-outline
-      - type: tile
-        entity: sensor.myszolot_charge_schedule
-        name: Planned cost
-        icon: mdi:cash-clock
+      {% elif as_timestamp(now()) < as_timestamp(end) %}
+
+      {% set rel = 'active now' %}
+
+      {% else %}
+
+      {% set rel = 'ended' %}
+
+      {% endif %}
+
+      - **Window:** {{ as_timestamp(start) | timestamp_custom('%H:%M', true) }}–{{ as_timestamp(end) | timestamp_custom('%H:%M', true) }} *({{ rel }})*
+
+      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ rem }}min · **{{ amps }}A** (~{{ kwh }} kWh)
+
+      - **SoC:** {{ soc }}% → **~{{ end_soc }}%**
+
+      - **Planned cost:** ~**{{ cost }} PLN**
+
+      {% else %}
+
+      _No session planned right now._
+
+      {% endif %}
 
   # ── Daily modes ───────────────────────────────────────────────────────────
   - type: markdown
@@ -142,7 +167,7 @@ cards:
 
   # ── Timed window ──────────────────────────────────────────────────────────
   - type: markdown
-    content: "**Timed window** — start hour + duration, then back to smart"
+    content: "**Timed window** — start hour + duration, then auto back to smart"
   - type: entities
     entities:
       - entity: input_number.myszolot_timed_start_hour
@@ -191,9 +216,13 @@ cards:
 
   # ── Overrides ─────────────────────────────────────────────────────────────
   - type: entities
-    title: Overrides
+    title: Overrides / Tesla
     entities:
       - entity: input_boolean.myszolot_location_override
         name: Force home (GPS fix)
       - entity: number.myszolot_charge_current
-        name: Tesla charge current (A)
+        name: Charge current (A)
+      - entity: number.myszolot_charge_limit
+        name: Charge limit %
+      - entity: switch.myszolot_charge
+        name: Charge switch
