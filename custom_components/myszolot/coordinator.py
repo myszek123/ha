@@ -745,7 +745,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             planned_end = display["end"]
 
         return {
-            "mode": mode,
+            # Always report the authoritative coordinator mode (not a local copy)
+            "mode": self._mode,
             "reason": reason,
             "should_charge": should_charge,
             "target_amps": target_amps,
