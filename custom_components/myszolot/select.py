@@ -39,3 +39,6 @@ class MyszolotChargeModeSelect(CoordinatorEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         self._coordinator.set_mode(option)
         await self._coordinator.async_request_refresh()
+        # Ensure the select entity state flips immediately (mode lives on the
+        # coordinator; without an explicit write HA can keep the old option).
+        self.async_write_ha_state()
