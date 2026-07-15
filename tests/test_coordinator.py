@@ -9,6 +9,9 @@ from custom_components.myszolot.coordinator import (
     determine_reason,
     is_in_session,
     build_timed_session,
+    expected_end_soc,
+    estimate_window_cost,
+    session_duration_minutes,
 )
 from custom_components.myszolot.const import (
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
@@ -351,14 +354,14 @@ def test_charging_started_false_allows_soc_sufficient():
 
 def test_build_timed_session_today_before_window():
     now = datetime(2024, 1, 15, 22, 0)
-    sessions = build_timed_session(2, 180, now, max_charge_rate_kW=6.9, current_price=0.3)
+    # 12 A · 230 V · 3 ph = 8.28 kW
+    sessions = build_timed_session(2, 180, now, max_charge_rate_kW=8.28, current_price=0.3)
     assert len(sessions) == 1
-    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)  # next calendar day after midnight? 
-    # start_hour=2, now=22:00 same day → window is still "tomorrow morning" relative to evening
-    # Actually start = today 02:00, end = today 05:00, now 22:00 >= end → roll to tomorrow
+    # start today 02:00 already over by 22:00 → roll to tomorrow
     assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)
     assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
-    assert sessions[0]["total_kWh"] == round(6.9 * 3, 4)
+    assert sessions[0]["total_kWh"] == round(8.28 * 3, 4)
+    assert sessions[0]["duration_minutes"] == 180
 
 
 def test_build_timed_session_during_window():
@@ -377,8 +380,41 @@ def test_build_timed_session_after_window_rolls_tomorrow():
     assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
 
 
+def test_build_timed_session_after_window_no_roll():
+    now = datetime(2024, 1, 15, 6, 0)
+    assert build_timed_session(2, 180, now, roll_if_ended=False) == []
+
+
 def test_build_timed_session_zero_duration():
     assert build_timed_session(2, 0, datetime(2024, 1, 15, 10, 0)) == []
+
+
+def test_expected_end_soc_clamped_to_target():
+    # 10 kWh into 50 kWh pack = +20% → 60; target 80 keeps 60
+    assert expected_end_soc(40.0, 10.0, 50.0, 80) == 60.0
+    # Would exceed target → clamp
+    assert expected_end_soc(75.0, 20.0, 50.0, 80) == 80.0
+
+
+def test_estimate_window_cost_uses_hourly_prices():
+    start = datetime(2024, 1, 15, 2, 0)
+    end = datetime(2024, 1, 15, 4, 0)
+    prices = [{"hour": 2, "price": 0.2}, {"hour": 3, "price": 0.4}]
+    kwh, cost = estimate_window_cost(start, end, 10.0, prices, 1.0, start.date())
+    assert kwh == 20.0  # 2 h · 10 kW
+    assert cost == pytest.approx(0.2 * 10 + 0.4 * 10)
+
+
+def test_session_duration_minutes():
+    sessions = [
+        {
+            "start": datetime(2024, 1, 15, 2, 0),
+            "end": datetime(2024, 1, 15, 3, 15),
+            "total_kWh": 0,
+            "total_cost": 0,
+        }
+    ]
+    assert session_duration_minutes(sessions) == 75
 
 
 def test_timed_mode_waiting():

@@ -7,6 +7,7 @@ BINARY_SENSOR_CABLE = "binary_sensor.myszolot_charge_cable"
 BINARY_SENSOR_GARAGE_CAR = "binary_sensor.garage_car_present"
 DEVICE_TRACKER = "device_tracker.myszolot_location"
 SENSOR_CHARGING = "sensor.myszolot_charging"
+NUMBER_CHARGE_CURRENT = "number.myszolot_charge_current"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
 INPUT_NUMBER_TIMED_START_HOUR = "input_number.myszolot_timed_start_hour"
@@ -28,7 +29,7 @@ CONF_PLAN_TRIP_DEADLINE_HOURS = "plan_trip_deadline_hours"
 # Defaults
 DEFAULT_CHARGER_PHASES = 3
 DEFAULT_VOLTAGE = 230
-DEFAULT_FAST_AMPS = 10
+DEFAULT_FAST_AMPS = 12
 DEFAULT_SLOW_AMPS = 5
 DEFAULT_BATTERY_CAPACITY_KWH = 68.9
 DEFAULT_TARGET_SOC = 80

@@ -121,7 +121,7 @@ One-shot fixed clock window: charge at fast amps from `start_hour:00` for `durat
 |---|---|---|
 | `charger_phases` | 3 | 1 or 3-phase charger |
 | `voltage` | 230 V | Line-to-neutral voltage |
-| `fast_amps` | 10 A | Fast charging current |
+| `fast_amps` | 12 A | Fast charging current (fallback if Tessie amps unavailable) |
 | `slow_amps` | 5 A | Slow charging current |
 | `battery_capacity_kWh` | 68.9 | Total usable battery capacity |
 | `default_target_soc` | 80% | Smart/now modes target SoC |
@@ -173,12 +173,19 @@ Non-smart modes auto-reset to `smart` when `soc >= target_soc`. `smart` and `sma
 | `next_session_start` | datetime | Next scheduled session start, or None |
 | `location_override_active` | bool | Whether location override helper is on |
 
-### Sensor: Charge Schedule
-**Entity ID:** `sensor.myszolot_charge_schedule`
+### Sensor: Planned Session Cost
+**Entity ID:** `sensor.myszolot_charge_schedule`  
+**Friendly name:** Myszolot Planned Session Cost
 
-**State:** Estimated remaining cost in PLN (sum of all scheduled sessions at current prices).
+**State:** Planned session cost in PLN (sum of scheduled windows, using hourly prices when available).
 
-**Attributes:** `sessions` list (start, end, kWh, cost), `E_needed`, `estimated_total_cost`
+**Attributes:** `sessions`, `planned_kwh`, `planned_duration_minutes`, `planned_session_start` / `end`, `expected_end_soc`, `charge_amps` (from Tessie `number.myszolot_charge_current`), `charge_rate_kw`, `E_needed`
+
+### Sensor: Expected End SoC
+**Entity ID:** `sensor.myszolot_expected_end_soc` — projected battery % after the planned session (clamped to target).
+
+### Sensor: Planned Session Duration
+**Entity ID:** `sensor.myszolot_planned_session_duration` — planned window length in minutes.
 
 ### Binary Sensor: Cable Needed
 **Entity ID:** `binary_sensor.myszolot_cable_needed`

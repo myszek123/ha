@@ -12,7 +12,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .const import (
     DOMAIN,
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
-    DEVICE_TRACKER, SENSOR_CHARGING,
+    DEVICE_TRACKER, SENSOR_CHARGING, NUMBER_CHARGE_CURRENT,
     MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
     MODE_SMART_CUSTOM, MODE_NOW_CUSTOM, MODE_TIMED,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS, CONF_SLOW_AMPS,
@@ -194,19 +194,89 @@ def next_session(sessions: list[dict], now_dt: datetime) -> dict | None:
     return min(future, key=lambda s: s["start"]) if future else None
 
 
+def _price_map(all_prices: list[dict] | None) -> dict[int, float]:
+    """Map hour index → price (hour may be >= 24 for tomorrow)."""
+    if not all_prices:
+        return {}
+    return {int(h["hour"]): float(h["price"]) for h in all_prices}
+
+
+def _hour_index(dt: datetime, ref_date: date_type) -> int:
+    """Hour index relative to ref_date midnight (0–23 today, 24–47 tomorrow, …)."""
+    day_offset = (dt.date() - ref_date).days
+    return day_offset * 24 + dt.hour
+
+
+def estimate_window_cost(
+    start: datetime,
+    end: datetime,
+    max_charge_rate_kW: float,
+    all_prices: list[dict] | None,
+    fallback_price: float,
+    ref_date: date_type,
+) -> tuple[float, float]:
+    """
+    Estimate kWh and cost for a continuous charge window at constant rate.
+
+    Uses hourly prices when available; falls back to fallback_price.
+    """
+    if end <= start or max_charge_rate_kW <= 0:
+        return 0.0, 0.0
+
+    prices = _price_map(all_prices)
+    total_kWh = 0.0
+    total_cost = 0.0
+    cursor = start
+    while cursor < end:
+        slot_end = min(end, cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        minutes = (slot_end - cursor).total_seconds() / 60.0
+        kwh = max_charge_rate_kW * minutes / 60.0
+        price = prices.get(_hour_index(cursor, ref_date), fallback_price)
+        total_kWh += kwh
+        total_cost += kwh * price
+        cursor = slot_end
+
+    return round(total_kWh, 4), round(total_cost, 4)
+
+
+def expected_end_soc(
+    current_soc: float,
+    planned_kWh: float,
+    battery_kWh: float,
+    target_soc: float,
+) -> float:
+    """Project SoC after delivering planned_kWh, clamped to target ceiling."""
+    if battery_kWh <= 0 or planned_kWh <= 0:
+        return round(min(float(target_soc), float(current_soc)), 1)
+    delta = planned_kWh / battery_kWh * 100.0
+    return round(min(float(target_soc), float(current_soc) + delta), 1)
+
+
+def session_duration_minutes(sessions: list[dict]) -> int:
+    """Total planned charging minutes across all sessions."""
+    if not sessions:
+        return 0
+    total = 0.0
+    for s in sessions:
+        total += (s["end"] - s["start"]).total_seconds() / 60.0
+    return int(round(total))
+
+
 def build_timed_session(
     start_hour: int,
     duration_minutes: int,
     now_dt: datetime,
     max_charge_rate_kW: float = 0.0,
     current_price: float = 0.0,
+    all_prices: list[dict] | None = None,
+    roll_if_ended: bool = True,
 ) -> list[dict]:
     """
     Build a single fixed-window charging session.
 
     Starts at start_hour:00 local time for duration_minutes.
-    If today's window has already fully ended, schedule tomorrow's window.
-    If we are currently inside today's window, keep today's session.
+    If today's window has already fully ended and roll_if_ended is True,
+    schedule tomorrow's window. If roll_if_ended is False, return [].
     """
     if duration_minutes <= 0:
         return []
@@ -217,13 +287,16 @@ def build_timed_session(
     start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
     end = start + timedelta(minutes=duration_minutes)
 
-    # Window fully over → roll to tomorrow
+    # Window fully over
     if now_dt >= end:
+        if not roll_if_ended:
+            return []
         start = start + timedelta(days=1)
         end = start + timedelta(minutes=duration_minutes)
 
-    total_kWh = round(max_charge_rate_kW * duration_minutes / 60.0, 4)
-    total_cost = round(total_kWh * current_price, 4)
+    total_kWh, total_cost = estimate_window_cost(
+        start, end, max_charge_rate_kW, all_prices, current_price, now_dt.date()
+    )
 
     return [
         {
@@ -232,6 +305,7 @@ def build_timed_session(
             "slots": [],
             "total_kWh": total_kWh,
             "total_cost": total_cost,
+            "duration_minutes": duration_minutes,
         }
     ]
 
@@ -421,6 +495,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             BINARY_SENSOR_CABLE,
             DEVICE_TRACKER,
             SENSOR_PRICE,
+            NUMBER_CHARGE_CURRENT,
+            INPUT_NUMBER_TIMED_START_HOUR,
+            INPUT_NUMBER_TIMED_DURATION_MINUTES,
+            INPUT_NUMBER_CUSTOM_TARGET_SOC,
         ]
 
         @callback
@@ -453,8 +531,14 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         charger_phases: int = cfg.get(CONF_CHARGER_PHASES, DEFAULT_CHARGER_PHASES)
         voltage: int = cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
 
-        # kW available per hour at fast_amps (max charge rate)
-        max_charge_rate_kW: float = fast_amps * voltage * charger_phases / 1000
+        # Prefer live Tessie charge-current setting for energy estimates / rate.
+        # Falls back to configured fast_amps (default 12 A).
+        tesla_current_state = self.hass.states.get(NUMBER_CHARGE_CURRENT)
+        tesla_amps_raw = _parse_float(tesla_current_state)
+        charge_amps: int = int(tesla_amps_raw) if tesla_amps_raw and tesla_amps_raw > 0 else fast_amps
+
+        # kW at the amps actually set on the car (3-phase wallbox assumption)
+        max_charge_rate_kW: float = charge_amps * voltage * charger_phases / 1000
 
         mode = self._mode
 
@@ -514,8 +598,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         all_prices = _parse_all_prices(price_state)
 
-        # Append tomorrow's prices if available and in scheduled modes
-        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM):
+        # Append tomorrow's prices when we may schedule overnight / timed windows
+        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM, MODE_TIMED):
             tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
             tomorrow_raw = _get_pstryk_tomorrow_prices(self.hass, tomorrow_str)
             for j, entry in enumerate(tomorrow_raw):
@@ -563,28 +647,42 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             sessions = compute_sessions(capped, now.date())
 
         elif mode == MODE_TIMED:
-            sessions = build_timed_session(
-                timed_start_hour,
-                timed_duration_minutes,
-                now,
-                max_charge_rate_kW=max_charge_rate_kW,
-                current_price=current_price,
-            )
-            # One-shot: after the window we were inside ends, return to smart
-            in_timed = is_in_session(sessions, now)
-            if self._timed_was_in_session and not in_timed:
-                _LOGGER.info(
-                    "Timed session ended (start_hour=%s, duration=%s min); "
-                    "resetting mode to smart",
-                    timed_start_hour, timed_duration_minutes,
+            # One-shot window: once we have been inside the session and it ends,
+            # reset to smart (do not roll to tomorrow).
+            if self._timed_was_in_session:
+                ended = build_timed_session(
+                    timed_start_hour,
+                    timed_duration_minutes,
+                    now,
+                    max_charge_rate_kW=max_charge_rate_kW,
+                    current_price=current_price,
+                    all_prices=all_prices,
+                    roll_if_ended=False,
                 )
-                self._mode = MODE_SMART
-                mode = MODE_SMART
-                target_soc = default_target_soc
-                sessions = []
-                self._timed_was_in_session = False
-            else:
-                self._timed_was_in_session = in_timed
+                if not ended or not is_in_session(ended, now):
+                    _LOGGER.info(
+                        "Timed session ended (start_hour=%s, duration=%s min); "
+                        "resetting mode to smart",
+                        timed_start_hour, timed_duration_minutes,
+                    )
+                    self._mode = MODE_SMART
+                    mode = MODE_SMART
+                    target_soc = default_target_soc
+                    sessions = []
+                    self._timed_was_in_session = False
+                else:
+                    sessions = ended
+            if mode == MODE_TIMED:
+                sessions = build_timed_session(
+                    timed_start_hour,
+                    timed_duration_minutes,
+                    now,
+                    max_charge_rate_kW=max_charge_rate_kW,
+                    current_price=current_price,
+                    all_prices=all_prices,
+                    roll_if_ended=True,
+                )
+                self._timed_was_in_session = is_in_session(sessions, now)
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,
@@ -594,7 +692,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             target_soc=target_soc,
             min_soc=min_soc,
             charge_start_soc=charge_start_soc,
-            fast_amps=fast_amps,
+            # Use live Tesla amps for "fast" so actuator keeps Tessie's 12 A
+            fast_amps=charge_amps,
             slow_amps=slow_amps,
             sessions=sessions,
             now_dt=now,
@@ -613,6 +712,20 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         cable_needed = should_charge and not cable_connected and car_in_garage
         ns = next_session(sessions, now)
 
+        planned_kwh = round(sum(s.get("total_kWh", 0.0) for s in sessions), 4)
+        planned_cost = round(sum(s.get("total_cost", 0.0) for s in sessions), 4)
+        planned_minutes = session_duration_minutes(sessions)
+        exp_soc = expected_end_soc(current_soc, planned_kwh, battery_kWh, target_soc)
+
+        # Prefer the soonest relevant window for display (active or next)
+        planned_start = None
+        planned_end = None
+        if sessions:
+            active = next((s for s in sessions if s["start"] <= now < s["end"]), None)
+            display = active or (ns if ns else sessions[0])
+            planned_start = display["start"]
+            planned_end = display["end"]
+
         return {
             "mode": mode,
             "reason": reason,
@@ -626,5 +739,13 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "E_needed": round(E_needed, 3),
             "sessions": sessions,
             "next_session_start": ns["start"] if ns else None,
-            "estimated_total_cost": round(sum(s["total_cost"] for s in sessions), 4),
+            "estimated_total_cost": planned_cost,
+            "planned_cost": planned_cost,
+            "planned_kwh": planned_kwh,
+            "planned_duration_minutes": planned_minutes,
+            "planned_session_start": planned_start,
+            "planned_session_end": planned_end,
+            "expected_end_soc": exp_soc,
+            "charge_amps": charge_amps,
+            "charge_rate_kw": round(max_charge_rate_kW, 3),
         }
