@@ -6,16 +6,14 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 
 ## Features
 
-- **Smart Mode**: Fractional knapsack scheduling for cheapest available hours across 48h window
-- **Custom Target Modes**: Schedule or charge immediately to any SoC % you choose
-- **Time-Aware**: Uses hourly electricity price forecasts to choose optimal charging windows
-- **Multiple Charge Modes**: Smart, Fast Now, Slow Now, Plan Trip, Trip Now, Smart Custom, Now Custom, Timed
-- **Battery Health**: Respects minimum SoC emergency floor and configurable target SoC
-- **Price Filter**: Skip charging if all eligible hours exceed max price threshold
-- **Continuous Sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
-- **Location Override**: Force "at home" status if device tracker is unreliable (GPS/sleep issues)
-- **Cable Reminder**: Automation notifies when cable is needed before session starts
-- **Dashboard Card**: Included Lovelace card with status display and quick-select mode buttons
+- **Smart (default)**: Always-on daily charging to 80% using cheapest hours; skips new sessions when SoC is already high enough (≥ `charge_start_soc`); hard price stop above threshold
+- **Override**: Temporary plan — charge to a chosen SoC **within N hours** (default 24h) using the cheapest hours, **no price hard-stop**; auto-returns to smart when target is hit or the window ends
+- **Feasibility warnings**: Surfaces max reachable SoC at current amps when the target cannot be met in time
+- **Battery health**: Emergency min-SoC floor; daily charge-start debounce
+- **Continuous sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
+- **Location override**: Force "at home" if device tracker is unreliable
+- **Cable reminder**: Notifies when cable is needed before a session
+- **Dashboard card**: Status, plan summary, smart reset, override controls
 
 ## Requirements
 
@@ -32,86 +30,44 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 
 1. Add this repository as a custom repository in HACS
 2. Install via Home Assistant UI: Settings → Devices & Services → Integrations → Myszolot
-3. Configure battery capacity, charger phases, and charging speeds
+3. Configure battery capacity, charger phases, and charging amps
 4. Create automations to actuate charge control (see [Example Automations](#example-automations))
-5. Optionally create [Optional Helpers](#optional-helpers) to enable extra features
+5. Create [Optional Helpers](#optional-helpers) for override + location features
 
 On first setup, a notification will appear in HA if any optional helpers are missing.
 
 ## Optional Helpers
 
-These HA helpers unlock optional features. The integration works without them — missing helpers simply disable the corresponding feature. Create them in **Settings → Devices & Services → Helpers**.
+Create these in **Settings → Devices & Services → Helpers**.
 
 ### Location Override
 
-**Entity:** `input_boolean.myszolot_location_override`
+**Entity:** `input_boolean.myszolot_location_override`  
 **Type:** Toggle (on/off)
 
-Useful when the Tesla device tracker reports `not_home` even though the car is in the garage (poor GPS signal, deep sleep, small zone radius). When this toggle is **on**, the integration treats the car as home regardless of what the device tracker reports.
+When **on**, the car is treated as home regardless of the device tracker (GPS/sleep issues).
 
-**To create:** Settings → Helpers → + Create helper → Toggle → Name: `myszolot_location_override`
+**Recommended:** auto-reset after 12h — see `automations/location-override-reset.yml`.
 
-**Behaviour:**
-- Toggle **off** (default): normal device tracker is used
-- Toggle **on**: car treated as home; charging schedules run normally
-- Visible in the dashboard card and as `location_override_active` attribute on `sensor.myszolot_charge_reason`
+### Override target SoC
 
-**Recommended: auto-reset after 12 hours** to prevent forgetting it's on:
+**Entity:** `input_number.myszolot_custom_target_soc`  
+**Type:** Number (50–100, step 1)
 
-```yaml
-alias: Myszolot - Reset location override after 12h
-triggers:
-  - trigger: state
-    entity_id: input_boolean.myszolot_location_override
-    to: "on"
-    for: "12:00:00"
-actions:
-  - action: input_boolean.turn_off
-    target:
-      entity_id: input_boolean.myszolot_location_override
-```
+Target SoC % for **override** mode (e.g. 95% before a trip).
 
-> **Note:** The charge-limit automation (`charge-limit-automation.yml`) reads `device_tracker.myszolot_location` directly. If the tracker says `not_home` while override is on, Tesla's charge limit won't be updated on mode switch — this is expected and harmless.
+### Override deadline (within hours)
 
----
+**Entity:** `input_number.myszolot_deadline_hours`  
+**Type:** Number (1–48, step 1), default **24**
 
-### Custom Target SoC
+How many hours from activation the override has to reach the target. Example: need 95% by 19:00 and it is 14:00 → set **5** hours, target **95**, then **Start override**.
 
-**Entity:** `input_number.myszolot_custom_target_soc`
-**Type:** Number (range 50–100, step 1)
-
-Sets the target SoC % used by the `smart_custom` and `now_custom` charge modes. Allows hitting 86%, 90%, or any value between 50% and 100% without changing the integration config.
-
-**To create:** Settings → Helpers → + Create helper → Number → Name: `myszolot_custom_target_soc`, Min: 50, Max: 100, Step: 1, Unit: %
-
-**Behaviour:**
-- If helper is missing, custom modes fall back to the `default_target_soc` config value (80%)
-- Set the desired % **before** activating a custom mode
-- Visible as a slider in the dashboard card
-
----
-
-### Timed Window (start hour + duration)
-
-**Entities:**
-- `input_number.myszolot_timed_start_hour` — Number (0–23, step 1), default **2**
-- `input_number.myszolot_timed_duration_minutes` — Number (15–480, step 15), default **180**
-
-One-shot fixed clock window: charge at fast amps from `start_hour:00` for `duration` minutes (e.g. start 2, duration 180 → 02:00–05:00). Ignores price optimisation and the smart SoC gate — useful when the car will leave early and smart mode would otherwise schedule later (or never) cheap hours.
-
-**To create:**
-1. Settings → Helpers → + Create helper → Number → Name: `myszolot_timed_start_hour`, Min: 0, Max: 23, Step: 1
-2. Settings → Helpers → + Create helper → Number → Name: `myszolot_timed_duration_minutes`, Min: 15, Max: 480, Step: 15, Unit: min
-
-**Behaviour:**
-- If helpers are missing, defaults are start hour **2** and duration **180** minutes
-- Set start hour + duration **before** selecting `timed` mode
-- If today's window already ended, the next window is tomorrow
-- After the active window ends, mode auto-resets to `smart`
-- Also auto-resets if SoC reaches the daily target (80%)
-- Charge limit stays at 80% (same as daily modes)
-
----
+**Behaviour when override is selected:**
+- Target + deadline are **locked** at activation
+- Scheduler picks the cheapest hours inside that window (ignores max price threshold)
+- When SoC reaches target **or** the deadline passes → mode returns to **smart**
+- You can always press **Smart (default)** to cancel early
 
 ## Configuration
 
@@ -121,20 +77,18 @@ One-shot fixed clock window: charge at fast amps from `start_hour:00` for `durat
 |---|---|---|
 | `charger_phases` | 3 | 1 or 3-phase charger |
 | `voltage` | 230 V | Line-to-neutral voltage |
-| `fast_amps` | 12 A | Fast charging current (fallback if Tessie amps unavailable) |
-| `slow_amps` | 5 A | Slow charging current |
+| `fast_amps` | 12 A | Fallback charging current if Tessie amps unavailable |
 | `battery_capacity_kWh` | 68.9 | Total usable battery capacity |
-| `default_target_soc` | 80% | Smart/now modes target SoC |
-| `trip_target_soc` | 95% | Plan trip / trip now target SoC |
+| `default_target_soc` | 80% | Smart mode daily target |
 | `min_soc` | 30% | Emergency charge floor |
-| `charge_start_soc` | 69% | Smart mode: skip scheduling if SoC already above this |
-| `max_price_threshold` | 1.0 PLN/kWh | Skip all hours if cheapest exceeds this |
-| `plan_trip_deadline_hours` | 8 h | Plan trip scheduling window |
+| `charge_start_soc` | 69% | Smart: do not **start** a new plan if SoC already above this |
+| `max_price_threshold` | 1.0 PLN/kWh | Smart: skip hours above this price |
+| `smart_deadline_hours` | 48 h | Smart: planning horizon for cheapest hours |
 
 **Derived at runtime:**
 ```
-max_charge_rate_kW = fast_amps × voltage × charger_phases / 1000
-  Example (3-phase, 10A): 10 × 230 × 3 / 1000 = 6.9 kW
+max_charge_rate_kW = charge_amps × voltage × charger_phases / 1000
+  Example (3-phase, 12A): 12 × 230 × 3 / 1000 = 8.28 kW
 ```
 
 ## Entities
@@ -142,126 +96,87 @@ max_charge_rate_kW = fast_amps × voltage × charger_phases / 1000
 ### Select: Charge Mode
 **Entity ID:** `select.myszolot_charge_mode`
 
-| Mode | Target SoC | Speed | Scheduling |
-|---|---|---|---|
-| `smart` | 80% | Cheapest hours | 48h window, skips if SoC > charge_start_soc |
-| `now_fast` | 80% | Fast amps immediately | None |
-| `now_slow` | 80% | Slow amps immediately | None |
-| `plan_trip` | 95% | Cheapest hours | Within deadline_hours window |
-| `trip_now` | 95% | Fast amps immediately | None |
-| `smart_custom` | Custom % | Cheapest hours | 48h window, no SoC gate |
-| `now_custom` | Custom % | Fast amps immediately | None |
-| `timed` | 80% (ceiling) | Fast amps in window | Fixed start hour + duration minutes |
+| Mode | Target SoC | Price hard-stop | SoC debounce | Scheduling |
+|---|---|---|---|---|
+| `smart` | 80% (config) | Yes (`max_price_threshold`) | Yes (`charge_start_soc`) | Cheapest hours in smart horizon (48h) |
+| `override` | Helper target % | **No** | **No** | Cheapest hours within locked deadline |
 
-Non-smart modes auto-reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset. `timed` also auto-resets when its window ends.
+Override auto-resets to `smart` when target is reached or the deadline ends.
 
 ### Sensor: Charge Reason
 **Entity ID:** `sensor.myszolot_charge_reason`
 
-**State:** Current charging decision (e.g., `scheduled`, `waiting_for_session`, `soc_sufficient`)
+**State:** Current decision (e.g. `scheduled`, `waiting_for_session`, `soc_sufficient`, `target_unreachable`)
 
-**Attributes:**
-| Attribute | Type | Description |
-|---|---|---|
-| `should_charge` | bool | Whether charging is recommended right now |
-| `target_amps` | int | Amperage to set if charging |
-| `mode` | str | Current selected mode |
-| `current_price` | float | Current electricity price (PLN/kWh) |
-| `current_soc` | float | Battery SoC (%) |
-| `target_soc` | int | Target SoC (%) |
-| `E_needed` | float | Energy needed to reach target (kWh) |
-| `next_session_start` | datetime | Next scheduled session start, or None |
-| `location_override_active` | bool | Whether location override helper is on |
+**Key attributes:**
 
-### Sensor: Planned Session Cost
-**Entity ID:** `sensor.myszolot_charge_schedule`  
-**Friendly name:** Myszolot Planned Session Cost
+| Attribute | Description |
+|---|---|
+| `should_charge` | Whether charging is recommended now |
+| `target_amps` | Amperage to set if charging |
+| `mode` | `smart` or `override` |
+| `target_soc` | Active target % |
+| `deadline_hours` | Active planning window (hours) |
+| `feasible` | Whether target is reachable at current amps in the window |
+| `max_reachable_soc` | Upper-bound SoC if charging full rate for the whole window |
+| `shortfall_soc` | `target − max_reachable` when unfeasible |
+| `expected_end_soc` | Projected SoC from the planned (price-optimised) sessions |
+| `override_remaining_minutes` | Minutes left on override deadline |
+| `location_override_active` | GPS force-home helper on |
 
-**State:** Planned session cost in PLN (sum of scheduled windows, using hourly prices when available).
+### Other sensors
 
-**Attributes:** `sessions`, `planned_kwh`, `planned_duration_minutes`, `planned_session_start` / `end`, `expected_end_soc`, `charge_amps` (from Tessie `number.myszolot_charge_current`), `charge_rate_kw`, `E_needed`
-
-### Sensor: Expected End SoC
-**Entity ID:** `sensor.myszolot_expected_end_soc` — projected battery % after the planned session (clamped to target).
-
-### Sensor: Planned Session Duration
-**Entity ID:** `sensor.myszolot_planned_session_duration` — planned window length in minutes.
-
-### Binary Sensor: Cable Needed
-**Entity ID:** `binary_sensor.myszolot_cable_needed`
-
-On when `should_charge=True AND cable disconnected AND device tracker reports home`. Location override is **not** counted — override only affects charging schedules, not plug-in reminders. Used to trigger the cable reminder automation.
+| Entity | Purpose |
+|---|---|
+| `sensor.myszolot_charge_schedule` | Planned session cost (PLN) + session list |
+| `sensor.myszolot_expected_end_soc` | Projected end SoC from plan |
+| `sensor.myszolot_planned_session_duration` | Planned charge minutes |
+| `sensor.myszolot_max_reachable_soc` | Feasibility ceiling at full rate |
+| `sensor.myszolot_override_remaining` | Human-readable override timer (`Off` / `3h 20m`) |
+| `binary_sensor.myszolot_cable_needed` | Cable reminder trigger |
 
 ## External Entities (Read)
 
 | Entity | Purpose |
 |---|---|
-| `sensor.pstryk_current_buy_price` | Current price & 24h forecast (`All prices` attribute) |
+| `sensor.pstryk_current_buy_price` | Current price & 24h forecast (`All prices`) |
 | `sensor.myszolot_battery_level` | Current SoC (%) |
-| `binary_sensor.myszolot_charge_cable` | Cable connected (on/off) |
-| `device_tracker.myszolot_location` | Car location (home / not_home) |
-| `sensor.myszolot_charging` | External charging status (charging / idle) |
-| `input_boolean.myszolot_location_override` | Optional — location override flag |
-| `input_number.myszolot_custom_target_soc` | Optional — custom target SoC % |
-| `input_number.myszolot_timed_start_hour` | Optional — timed mode start hour (0–23) |
-| `input_number.myszolot_timed_duration_minutes` | Optional — timed mode duration (minutes) |
+| `binary_sensor.myszolot_charge_cable` | Cable connected |
+| `device_tracker.myszolot_location` | Car location |
+| `sensor.myszolot_charging` | External charging status |
+| `input_boolean.myszolot_location_override` | Optional force-home |
+| `input_number.myszolot_custom_target_soc` | Override target % |
+| `input_number.myszolot_deadline_hours` | Override window (hours) |
 
 ## External Entities (Write)
 
-The integration does not write to these — create automations based on `sensor.myszolot_charge_reason`:
+Actuated by automations from `sensor.myszolot_charge_reason`:
 
 | Entity | Purpose |
 |---|---|
 | `switch.myszolot_charge` | Enable/disable charging |
 | `number.myszolot_charge_current` | Set charging current (amps) |
 | `switch.autel_charge_control` | Enable/disable charger unit |
-| `number.myszolot_charge_limit` | Tesla charge limit % (set by `charge-limit-automation.yml`) |
+| `number.myszolot_charge_limit` | Tesla charge limit % (`charge-limit-automation.yml`) |
 
-## Charge Modes
+## Charge Modes (detail)
 
-### Smart (Default)
-- **Target:** 80% (configurable via `default_target_soc`)
-- **Scheduling:** Cheapest hours in 48h window
-- **Gate:** Won't schedule new sessions if SoC > `charge_start_soc` (69% default)
-- **Use case:** Regular daily charging, minimum cost
+### Smart (default, always on)
 
-### Now Fast / Now Slow
-- **Target:** 80%
-- **Speed:** Fast or slow amps immediately, no price optimisation
-- **Use case:** Quick top-up when price doesn't matter
+- **Target:** 80% (`default_target_soc`)
+- **Debounce:** if SoC already **>** `charge_start_soc` (69%), do not start a new daily plan (`soc_sufficient`)
+- **Price:** skip hours above `max_price_threshold` — wait longer for cheaper power
+- **Emergency:** if SoC &lt; `min_soc` and cable is in, charge immediately at full amps
+- **Once a session starts:** `charging_started` allows finishing through to 80% even past the debounce line
 
-### Plan Trip
-- **Target:** 95% (configurable via `trip_target_soc`)
-- **Scheduling:** Cheapest hours within `plan_trip_deadline_hours` (default 8h)
-- **Also sets:** Tesla charge limit to 95% via `charge-limit-automation.yml`
-- **Use case:** Road trip within 8 hours, reach 95% at minimum cost
+### Override (temporary)
 
-### Trip Now
-- **Target:** 95%
-- **Speed:** Fast amps immediately
-- **Also sets:** Tesla charge limit to 95%
-- **Use case:** Emergency trip prep, charge to 95% ASAP
-
-### Smart Custom
-- **Target:** Value of `input_number.myszolot_custom_target_soc` (requires [helper](#custom-target-soc))
-- **Scheduling:** Cheapest hours in 48h window
-- **No SoC gate:** Always schedules toward the custom target regardless of current SoC
-- **Also sets:** Tesla charge limit to custom %
-- **Use case:** Schedule to 86% or 90% at minimum cost
-
-### Now Custom
-- **Target:** Value of `input_number.myszolot_custom_target_soc` (requires [helper](#custom-target-soc))
-- **Speed:** Fast amps immediately, no price optimisation
-- **Also sets:** Tesla charge limit to custom %
-- **Use case:** Charge immediately to a specific % (not 80%, not 95%)
-
-### Timed
-- **Window:** `input_number.myszolot_timed_start_hour` + `input_number.myszolot_timed_duration_minutes` (see [helpers](#timed-window-start-hour--duration))
-- **Speed:** Fast amps during the window only
-- **No price optimisation:** charges regardless of PLN/kWh in that window
-- **No SoC gate:** ignores `charge_start_soc` (still stops / resets at daily target 80%)
-- **One-shot:** after the window ends, mode resets to `smart`
-- **Use case:** Car leaves early tomorrow; force a top-up in the known-cheap overnight hours (e.g. 02:00 for 180 min) even though smart mode cannot plan around a morning departure
+- **Target:** `input_number.myszolot_custom_target_soc` (e.g. 95%)
+- **Window:** `input_number.myszolot_deadline_hours` from the moment you press **Start override**
+- **Price:** no hard stop — always pick the **cheapest** hours inside the window
+- **No SoC debounce** — always tries to reach the target
+- **Feasibility:** if max rate × available hours cannot hit target, plan still uses best-effort cheapest hours and UI shows `max_reachable_soc` / `target_unreachable`
+- **Exit:** target reached, deadline expired, or manual return to **smart**
 
 ## Example Automations
 
@@ -296,121 +211,78 @@ actions:
 mode: single
 ```
 
-### Cable Reminder Automation
+### Charge limit by mode
 
-See `automations/cable-reminder.yml`. Requires `binary_sensor.myszolot_cable_needed` and `device_tracker.myszolot_location == home`.
+See `automations/charge-limit-automation.yml` — smart → 80%, override → custom target helper.
 
-### Location Override Auto-Reset
+### Cable reminder / location override reset / dashboard
 
-See `automations/location-override-reset.yml`. Recommended — prevents override from staying on after you leave.
-
-### Dashboard Card
-
-Copy `automations/dashboard-card.yml` into Lovelace (Edit dashboard → Add card → Manual card).
+- `automations/cable-reminder.yml`
+- `automations/location-override-reset.yml`
+- `automations/dashboard-card.yml` (paste as Manual card)
 
 ## Voice announcements (xAI Grok TTS)
 
-Speak on the family-room Yamaha soundbar (`media_player.pokoj_rodzinny`) or LG TV via Grok TTS.
+Speak on the family-room Yamaha soundbar (`media_player.pokoj_rodzinny`) via Grok TTS. See `scripts/README.md` and `custom_components/xai_tts/`.
 
-### Requirements
-
-- Yamaha YAS-408 with **network standby** enabled (factory default)
-- xAI API key with TTS credits ([console.x.ai](https://console.x.ai))
-- Home Assistant 2024.10+
-
-### Install `xai_tts` integration
-
-Vendored in this repo (upstream: [ha-xai-tts](https://github.com/therealakahn/ha-xai-tts), with a small Polish/`auto` language patch — see `custom_components/xai_tts/UPSTREAM.md`).
+Deploy path:
 
 ```bash
-rsync -av custom_components/xai_tts/ root@192.168.1.201:/opt/ha/config/custom_components/xai_tts/
-ssh root@192.168.1.201 "docker restart ha"
+# Prefer SSH alias `ha` (user ansible). Root SSH is disabled on containers.
+rsync -av custom_components/xai_tts/ ansible@192.168.1.201:/tmp/xai_tts/
+ssh ha "sudo rsync -av /tmp/xai_tts/ /opt/ha/config/custom_components/xai_tts/ && sudo docker restart ha"
 ```
-
-Then in HA UI: **Settings → Devices & Services → Add Integration → xAI Text-to-Speech** — enter API key, pick voice (default **Ara**), language **auto** or **pl**.
-
-Creates entity `tts.xai_tts`. **Do not commit API keys.**
-
-### Install `say_pokoj_rodzinny` script
-
-See `scripts/README.md`. Merge `scripts/say-pokoj-rodzinny.yml` into live `scripts.yaml` as key `say_pokoj_rodzinny`, then reload scripts.
-
-### Usage
-
-**Developer tools → Actions → YAML mode:**
-
-```yaml
-action: script.say_pokoj_rodzinny
-data:
-  message: "Auto w garażu."
-  target: soundbar   # or tv
-```
-
-**From an automation:**
-
-```yaml
-- action: script.say_pokoj_rodzinny
-  data:
-    message: "Podłącz kabel ładowania."
-    target: soundbar
-```
-
-### Optional: agent skill
-
-`saymeviaha` (`~/.claude/skills/saymeviaha/`) calls this script from Claude/Grok — personal tooling, not in this repo. Phone push equivalent: `notifymeviaha`.
 
 ## Algorithm: Fractional Knapsack + Continuous Sessions
 
 1. **Build Schedule**: Select cheapest eligible hours until energy need is met
 2. **Merge Sessions**: Adjacent hours merge into one continuous window
-3. **Shift Partial Hours**: Partial first hour of a group shifts to tail of that hour for smooth start
-4. **Compute Sessions**: List of windows with start/end times, kWh, and cost
+3. **Shift Partial Hours**: Partial first hour of a group shifts to tail of that hour
+4. **Feasibility**: Compare full-rate capacity of the window vs energy needed
 
-**Example:**
-- Need 10 kWh, max 6 kWh/hour
-- Hour 13 @ 0.50 PLN → 6 kWh (full)
-- Hour 14 @ 0.25 PLN → 4 kWh (partial, 40 min)
-- Result: one session 13:00–15:00 (continuous; hour 14 shifted to :20–:00)
+**Example (override 95% by evening):**
+- Need ~20 kWh at 8.28 kW → ~2.5 h of charge time
+- Window = 5 h → feasible; knapsack picks the cheapest 3 hours inside that window
 
 ## Implementation Notes
 
-### Coordinator Refresh Triggers
+### Coordinator refresh
 
-Schedule rebuilds on: SoC change, location change, cable plug/unplug, price update, mode change, every 5 minutes.
+Schedule rebuilds on: SoC change, location change, cable, price update, mode change, target/deadline helpers, every 5 minutes.
 
-### Mode Auto-Reset
+### Mode auto-reset
 
-Non-smart modes (`now_fast`, `now_slow`, `trip_now`, `now_custom`, `plan_trip`, `timed`) reset to `smart` when `soc >= target_soc`. `smart` and `smart_custom` never auto-reset. `timed` also resets when its fixed window ends.
+Only **override** auto-resets to **smart** (target reached or deadline end). Smart never resets.
 
-### Charging Started Flag
+### Charging started flag
 
-Once a scheduled session starts, a flag bypasses the `charge_start_soc` gate, allowing charging to continue past that threshold to reach `target_soc`. Resets when target is reached.
+Once a smart scheduled session starts, the flag bypasses `charge_start_soc` so the session can finish to 80%. Clears when target is reached.
 
 ## Testing
 
 ```bash
 pytest tests/                        # All tests
 pytest tests/test_scheduler.py      # Knapsack + session merging
-pytest tests/test_coordinator.py    # Reason determination logic
+pytest tests/test_coordinator.py    # Reason determination + feasibility
 pytest tests/test_config_flow.py    # Configuration validation
 ```
 
 ## Troubleshooting
 
-**Q: Charge schedule is empty?**
-A: Check that `sensor.pstryk_current_buy_price` has `All prices` attribute with a 24-entry array.
+**Q: Charge schedule is empty?**  
+A: Check `sensor.pstryk_current_buy_price` has `All prices` with a 24-entry array. In smart mode, all hours may exceed `max_price_threshold`.
 
-**Q: Car shows as not home even when in garage?**
-A: GPS signal or deep sleep issue. Enable the [Location Override](#location-override) helper and toggle it on from the dashboard card.
+**Q: Car shows not home in the garage?**  
+A: Enable location override toggle from the dashboard.
 
-**Q: Custom modes charge to 80% instead of my target?**
-A: The `input_number.myszolot_custom_target_soc` helper is missing. Create it per the [Custom Target SoC](#custom-target-soc) instructions.
+**Q: Override does nothing / falls back immediately?**  
+A: Create `input_number.myszolot_custom_target_soc` and `input_number.myszolot_deadline_hours`, set them **before** Start override.
 
-**Q: Charging stops mid-session?**
-A: Check cable is connected. Review `sensor.myszolot_charge_reason` state and `should_charge` attribute to diagnose.
+**Q: Warning “target may be unreachable”?**  
+A: At current amps (e.g. 12 A), continuous charging for the whole window still cannot hit the target. Plan still uses cheapest hours (best effort). Raise amps, lengthen the window, or lower the target.
 
-**Q: No sessions scheduled?**
-A: Either `E_needed` is 0 (already at target), all hours exceed `max_price_threshold`, or the price sensor has no `All prices` attribute.
+**Q: Smart won’t top up from 72%?**  
+A: Expected — `charge_start_soc` debounce. Use **override** if you need a higher target soon.
 
 ## License
 

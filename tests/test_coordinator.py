@@ -8,23 +8,21 @@ import pytest
 from custom_components.myszolot.coordinator import (
     determine_reason,
     is_in_session,
-    build_timed_session,
     expected_end_soc,
     estimate_window_cost,
     session_duration_minutes,
+    max_energy_in_window,
+    max_reachable_soc,
+    build_schedule,
 )
 from custom_components.myszolot.const import (
-    MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
-    MODE_TIMED,
+    MODE_SMART, MODE_OVERRIDE,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING,
     REASON_TARGET_REACHED, REASON_MIN_SOC_FLOOR,
-    REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW, REASON_TRIP_CHARGING_NOW,
     REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
-    REASON_HOME_NOT_PLUGGED, REASON_TIMED_SESSION_DONE,
+    REASON_HOME_NOT_PLUGGED, REASON_TARGET_UNREACHABLE,
 )
-
-# ── Default parameters shared across most tests ───────────────────────────────
 
 DEFAULTS = dict(
     mode=MODE_SMART,
@@ -34,13 +32,13 @@ DEFAULTS = dict(
     target_soc=80,
     min_soc=30,
     charge_start_soc=69,
-    fast_amps=10,
-    slow_amps=5,
+    charge_amps=12,
     sessions=[],
     now_dt=datetime(2024, 1, 15, 10, 0),
     E_needed=20.0,
     schedule_all_prices_above_max=False,
     is_externally_charging=False,
+    feasible=True,
 )
 
 
@@ -91,13 +89,10 @@ def test_min_soc_floor_with_cable():
     )
     assert reason == REASON_MIN_SOC_FLOOR
     assert should_charge is True
-    assert amps == DEFAULTS["fast_amps"]
+    assert amps == DEFAULTS["charge_amps"]
 
 
 def test_min_soc_floor_no_cable_not_triggered():
-    # Without cable, priority 3 (min_soc_floor) is skipped.
-    # mode=SMART falls into priority 7: soc(20) <= charge_start_soc(69),
-    # no schedule, E_needed > 0 → no_eligible_hours.
     reason, should_charge, amps = dr(
         current_soc=20, min_soc=30, cable_connected=False
     )
@@ -105,34 +100,7 @@ def test_min_soc_floor_no_cable_not_triggered():
     assert should_charge is False
 
 
-# ── Priority 4: now_fast ──────────────────────────────────────────────────────
-
-def test_mode_now_fast():
-    reason, should_charge, amps = dr(mode=MODE_NOW_FAST)
-    assert reason == REASON_CHARGING_NOW_FAST
-    assert should_charge is True
-    assert amps == DEFAULTS["fast_amps"]
-
-
-# ── Priority 5: now_slow ──────────────────────────────────────────────────────
-
-def test_mode_now_slow():
-    reason, should_charge, amps = dr(mode=MODE_NOW_SLOW)
-    assert reason == REASON_CHARGING_NOW_SLOW
-    assert should_charge is True
-    assert amps == DEFAULTS["slow_amps"]
-
-
-# ── Priority 6: trip_now ──────────────────────────────────────────────────────
-
-def test_mode_trip_now():
-    reason, should_charge, amps = dr(mode=MODE_TRIP_NOW)
-    assert reason == REASON_TRIP_CHARGING_NOW
-    assert should_charge is True
-    assert amps == DEFAULTS["fast_amps"]
-
-
-# ── Priority 7: smart mode ────────────────────────────────────────────────────
+# ── Smart mode ────────────────────────────────────────────────────────────────
 
 def test_smart_soc_sufficient():
     reason, should_charge, amps = dr(mode=MODE_SMART, current_soc=70, charge_start_soc=69)
@@ -156,7 +124,7 @@ def test_smart_scheduled_in_session():
     )
     assert reason == REASON_SCHEDULED
     assert should_charge is True
-    assert amps == DEFAULTS["fast_amps"]
+    assert amps == DEFAULTS["charge_amps"]
 
 
 def test_smart_waiting_for_session():
@@ -184,94 +152,122 @@ def test_smart_target_reached_e_needed_zero():
     assert should_charge is False
 
 
-# ── Priority 7: plan_trip mode ────────────────────────────────────────────────
+# ── Override mode ─────────────────────────────────────────────────────────────
 
-def test_plan_trip_no_soc_sufficient_check():
-    # plan_trip ignores charge_start_soc — should NOT return soc_sufficient
+def test_override_no_soc_sufficient_check():
+    # Override ignores charge_start_soc — should NOT return soc_sufficient
     reason, should_charge, amps = dr(
-        mode=MODE_PLAN_TRIP,
+        mode=MODE_OVERRIDE,
         current_soc=75,
-        charge_start_soc=69,  # soc (75) > charge_start_soc (69)
+        charge_start_soc=69,
         target_soc=95,
         E_needed=13.0,
         sessions=[],
+        feasible=True,
     )
-    # Should NOT be soc_sufficient; falls to no_eligible_hours
     assert reason == REASON_NO_ELIGIBLE_HOURS
 
 
-def test_plan_trip_scheduled():
+def test_override_ignores_price_too_high_flag():
+    # schedule_all_prices_above_max is a smart-mode concept; override still schedules
     now = datetime(2024, 1, 15, 14, 30)
     sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 15, 0))]
     reason, should_charge, amps = dr(
-        mode=MODE_PLAN_TRIP, sessions=sessions, now_dt=now,
+        mode=MODE_OVERRIDE,
+        sessions=sessions,
+        now_dt=now,
+        current_soc=50,
+        target_soc=95,
+        E_needed=30.0,
+        schedule_all_prices_above_max=True,
+    )
+    assert reason == REASON_SCHEDULED
+    assert should_charge is True
+
+
+def test_override_scheduled():
+    now = datetime(2024, 1, 15, 14, 30)
+    sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 15, 0))]
+    reason, should_charge, amps = dr(
+        mode=MODE_OVERRIDE, sessions=sessions, now_dt=now,
         current_soc=50, target_soc=95, E_needed=30.0,
     )
     assert reason == REASON_SCHEDULED
     assert should_charge is True
 
 
-# ── Mode auto-reset side-effects (tested via determine_reason directly) ───────
-
-def test_now_fast_with_high_soc_still_charges():
-    # determine_reason does NOT auto-reset modes — that's the coordinator's job.
-    # At this level, now_fast always returns charging.
+def test_override_unreachable():
     reason, should_charge, amps = dr(
-        mode=MODE_NOW_FAST, current_soc=85, target_soc=80
+        mode=MODE_OVERRIDE,
+        sessions=[],
+        E_needed=40.0,
+        current_soc=40,
+        target_soc=95,
+        feasible=False,
     )
-    assert reason == REASON_CHARGING_NOW_FAST
+    assert reason == REASON_TARGET_UNREACHABLE
+    assert should_charge is False
+
+
+def test_override_waiting():
+    now = datetime(2024, 1, 15, 10, 0)
+    sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 16, 0))]
+    reason, should_charge, amps = dr(
+        mode=MODE_OVERRIDE, sessions=sessions, now_dt=now,
+        current_soc=55, target_soc=95, E_needed=25.0,
+    )
+    assert reason == REASON_WAITING_FOR_SESSION
+    assert should_charge is False
+
+
+# ── charging_started flag ─────────────────────────────────────────────────────
+
+def test_charging_started_bypasses_soc_sufficient():
+    now = datetime(2024, 1, 15, 14, 30)
+    sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 15, 0))]
+    reason, should_charge, amps = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=72,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=12,
+        sessions=sessions,
+        now_dt=now,
+        E_needed=5.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,
+    )
+    assert reason == REASON_SCHEDULED
     assert should_charge is True
+    assert amps == 12
 
 
-# ── cable_needed derivation ───────────────────────────────────────────────────
-
-def test_cable_needed_when_should_charge_no_cable_home():
-    """cable_needed = should_charge AND not cable AND is_home."""
-    reason, should_charge, amps = dr(mode=MODE_NOW_FAST, cable_connected=False, is_home=True)
-    assert should_charge is True  # now_fast always wants to charge
-    # cable_needed is computed by the coordinator, not determine_reason; verify flag
-    cable_needed = should_charge and not True and True  # cable_connected=False
-    assert cable_needed is False  # double-check logic (should_charge=True, no_cable=True, home=True → True)
-    cable_needed = should_charge and (not False) and True
-    assert cable_needed is True
-
-
-def test_cable_needed_false_when_not_home():
-    reason, should_charge, amps = dr(mode=MODE_NOW_FAST, is_home=False)
-    assert should_charge is False  # not home → no charge
-    cable_needed = should_charge and True and False  # not home
-    assert cable_needed is False
-
-
-def test_cable_needed_false_when_cable_connected():
-    reason, should_charge, amps = dr(mode=MODE_NOW_FAST, cable_connected=True, is_home=True)
-    assert should_charge is True
-    cable_needed = should_charge and (not True) and True
-    assert cable_needed is False
+def test_charging_started_false_allows_soc_sufficient():
+    reason, should_charge, amps = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=72,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=12,
+        sessions=[],
+        now_dt=datetime(2024, 1, 15, 10, 0),
+        E_needed=5.0,
+        schedule_all_prices_above_max=False,
+        charging_started=False,
+    )
+    assert reason == REASON_SOC_SUFFICIENT
+    assert should_charge is False
 
 
-def test_cable_needed_ignores_location_override():
-    """cable_needed uses device tracker only; override must not enable reminders."""
-    is_home_actual = False
-    location_override_active = True
-    is_home = is_home_actual or location_override_active
-    reason, should_charge, amps = dr(mode=MODE_NOW_FAST, is_home=is_home, cable_connected=False)
-    assert should_charge is True
-    cable_needed = should_charge and not False and is_home_actual
-    assert cable_needed is False
-
-
-# ── Priority 8: home, not plugged ────────────────────────────────────────────
+# ── Fallback ──────────────────────────────────────────────────────────────────
 
 def test_home_not_plugged_fallback():
-    # Smart mode, no cable, soc < target, soc > charge_start_soc → soc_sufficient
-    # (verify home_not_plugged IS reachable when no mode matches nothing else)
-    # Trigger it: cable disconnected, soc < target, soc < charge_start_soc but mode=smart
-    # wait — smart with cable_connected=False and soc <= charge_start_soc falls through
-    # to waiting/no_eligible if there are no sessions. Let's confirm via no-cable path.
-    # Actually home_not_plugged is only reachable as fallback for unknown mode.
-    # For known modes, smart returns a specific reason even without cable.
-    # Let's test the actual fallback with an unrecognised mode string.
     reason, should_charge, amps = determine_reason(
         mode="unknown_mode",
         is_home=True,
@@ -280,8 +276,7 @@ def test_home_not_plugged_fallback():
         target_soc=80,
         min_soc=30,
         charge_start_soc=69,
-        fast_amps=10,
-        slow_amps=5,
+        charge_amps=12,
         sessions=[],
         now_dt=datetime(2024, 1, 15, 10, 0),
         E_needed=10.0,
@@ -291,108 +286,10 @@ def test_home_not_plugged_fallback():
     assert should_charge is False
 
 
-# ── charging_started flag behavior ──────────────────────────────────────────────
-
-def test_charging_started_bypasses_soc_sufficient():
-    """
-    When charging_started=True, soc_sufficient should be skipped.
-    This allows charging to continue past charge_start_soc.
-    """
-    # SoC=72 > charge_start_soc=69, but charging_started=True → skip soc_sufficient
-    # Should fall through to is_in_session logic
-    now = datetime(2024, 1, 15, 14, 30)
-    sessions = [_session(datetime(2024, 1, 15, 14, 0), datetime(2024, 1, 15, 15, 0))]
-    reason, should_charge, amps = determine_reason(
-        mode=MODE_SMART,
-        is_home=True,
-        cable_connected=True,
-        current_soc=72,  # above charge_start_soc=69
-        target_soc=80,
-        min_soc=30,
-        charge_start_soc=69,
-        fast_amps=10,
-        slow_amps=5,
-        sessions=sessions,
-        now_dt=now,
-        E_needed=5.0,
-        schedule_all_prices_above_max=False,
-        charging_started=True,  # Flag is True → skip soc_sufficient check
-    )
-    # Should return REASON_SCHEDULED, not REASON_SOC_SUFFICIENT
-    assert reason == REASON_SCHEDULED
-    assert should_charge is True
-    assert amps == 10
-
-
-def test_charging_started_false_allows_soc_sufficient():
-    """
-    When charging_started=False, soc_sufficient should trigger.
-    This prevents starting a session if SoC is already high.
-    """
-    # SoC=72 > charge_start_soc=69, charging_started=False → should return soc_sufficient
-    reason, should_charge, amps = determine_reason(
-        mode=MODE_SMART,
-        is_home=True,
-        cable_connected=True,
-        current_soc=72,
-        target_soc=80,
-        min_soc=30,
-        charge_start_soc=69,
-        fast_amps=10,
-        slow_amps=5,
-        sessions=[],
-        now_dt=datetime(2024, 1, 15, 10, 0),
-        E_needed=5.0,
-        schedule_all_prices_above_max=False,
-        charging_started=False,  # Flag is False → allow soc_sufficient check
-    )
-    assert reason == REASON_SOC_SUFFICIENT
-    assert should_charge is False
-
-
-# ── Timed mode ────────────────────────────────────────────────────────────────
-
-def test_build_timed_session_today_before_window():
-    now = datetime(2024, 1, 15, 22, 0)
-    # 12 A · 230 V · 3 ph = 8.28 kW
-    sessions = build_timed_session(2, 180, now, max_charge_rate_kW=8.28, current_price=0.3)
-    assert len(sessions) == 1
-    # start today 02:00 already over by 22:00 → roll to tomorrow
-    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)
-    assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
-    assert sessions[0]["total_kWh"] == round(8.28 * 3, 4)
-    assert sessions[0]["duration_minutes"] == 180
-
-
-def test_build_timed_session_during_window():
-    now = datetime(2024, 1, 15, 3, 30)
-    sessions = build_timed_session(2, 180, now)
-    assert len(sessions) == 1
-    assert sessions[0]["start"] == datetime(2024, 1, 15, 2, 0)
-    assert sessions[0]["end"] == datetime(2024, 1, 15, 5, 0)
-    assert is_in_session(sessions, now) is True
-
-
-def test_build_timed_session_after_window_rolls_tomorrow():
-    now = datetime(2024, 1, 15, 6, 0)
-    sessions = build_timed_session(2, 180, now)
-    assert sessions[0]["start"] == datetime(2024, 1, 16, 2, 0)
-    assert sessions[0]["end"] == datetime(2024, 1, 16, 5, 0)
-
-
-def test_build_timed_session_after_window_no_roll():
-    now = datetime(2024, 1, 15, 6, 0)
-    assert build_timed_session(2, 180, now, roll_if_ended=False) == []
-
-
-def test_build_timed_session_zero_duration():
-    assert build_timed_session(2, 0, datetime(2024, 1, 15, 10, 0)) == []
-
+# ── Helpers / estimates ───────────────────────────────────────────────────────
 
 def test_expected_end_soc_clamped_to_target():
-    # 10 kWh into 50 kWh pack = +20% → 60; target 80 keeps 60
     assert expected_end_soc(40.0, 10.0, 50.0, 80) == 60.0
-    # Would exceed target → clamp
     assert expected_end_soc(75.0, 20.0, 50.0, 80) == 80.0
 
 
@@ -401,7 +298,7 @@ def test_estimate_window_cost_uses_hourly_prices():
     end = datetime(2024, 1, 15, 4, 0)
     prices = [{"hour": 2, "price": 0.2}, {"hour": 3, "price": 0.4}]
     kwh, cost = estimate_window_cost(start, end, 10.0, prices, 1.0, start.date())
-    assert kwh == 20.0  # 2 h · 10 kW
+    assert kwh == 20.0
     assert cost == pytest.approx(0.2 * 10 + 0.4 * 10)
 
 
@@ -417,43 +314,32 @@ def test_session_duration_minutes():
     assert session_duration_minutes(sessions) == 75
 
 
-def test_timed_mode_waiting():
-    now = datetime(2024, 1, 15, 22, 0)
-    sessions = [_session(datetime(2024, 1, 16, 2, 0), datetime(2024, 1, 16, 5, 0))]
-    reason, should_charge, amps = dr(
-        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=55,
-    )
-    assert reason == REASON_WAITING_FOR_SESSION
-    assert should_charge is False
-    assert amps == 0
+def test_max_energy_in_window():
+    prices = [{"hour": h, "price": 0.5} for h in range(10, 20)]
+    now = datetime(2024, 1, 15, 10, 0)
+    # 5 hours × 8.28 kW
+    assert max_energy_in_window(prices, 8.28, now, 5) == pytest.approx(5 * 8.28)
 
 
-def test_timed_mode_in_session_charges_fast():
-    now = datetime(2024, 1, 15, 3, 0)
-    sessions = [_session(datetime(2024, 1, 15, 2, 0), datetime(2024, 1, 15, 5, 0))]
-    reason, should_charge, amps = dr(
-        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=72,
-        charge_start_soc=69,  # high SoC must NOT block timed
-    )
-    assert reason == REASON_SCHEDULED
-    assert should_charge is True
-    assert amps == DEFAULTS["fast_amps"]
+def test_max_reachable_soc():
+    # 10 kWh into 50 kWh pack from 40% → 60%
+    assert max_reachable_soc(40.0, 10.0, 50.0) == 60.0
+    assert max_reachable_soc(95.0, 50.0, 50.0) == 100.0
 
 
-def test_timed_mode_no_session_done():
-    reason, should_charge, amps = dr(mode=MODE_TIMED, sessions=[], current_soc=50)
-    assert reason == REASON_TIMED_SESSION_DONE
-    assert should_charge is False
+def test_build_schedule_picks_cheapest():
+    prices = [
+        {"hour": 10, "price": 1.0},
+        {"hour": 11, "price": 0.2},
+        {"hour": 12, "price": 0.5},
+    ]
+    now = datetime(2024, 1, 15, 10, 0)
+    sched = build_schedule(prices, E_needed=8.0, max_kWh_per_hour=8.0, now_dt=now, deadline_hours=5)
+    assert len(sched) == 1
+    assert sched[0]["hour"] == 11
 
 
-def test_timed_window_past_end_is_not_in_session():
-    """After locked window end, is_in_session is false (coordinator resets to smart)."""
+def test_is_in_session_exclusive_end():
     now = datetime(2024, 1, 15, 5, 0)
     sessions = [_session(datetime(2024, 1, 15, 2, 0), datetime(2024, 1, 15, 5, 0))]
-    # end is exclusive in is_in_session (start <= now < end)
     assert is_in_session(sessions, now) is False
-    reason, should_charge, amps = dr(
-        mode=MODE_TIMED, sessions=sessions, now_dt=now, current_soc=60,
-    )
-    # Still in mode timed with a past session → not scheduled, waiting or done
-    assert should_charge is False

@@ -1,8 +1,8 @@
 # Myszolot charging panel for Overview.
-# Status tiles + plan summary (no duplicate session tiles).
+# Smart (default) + temporary override (target % within N hours).
 type: vertical-stack
 cards:
-  # ── Status: Battery | Mode / Decision | Cable ─────────────────────────────
+  # ── Status ────────────────────────────────────────────────────────────────
   - type: grid
     columns: 2
     square: false
@@ -24,7 +24,7 @@ cards:
         name: Cable
         icon: mdi:ev-plug-type2
 
-  # ── Plan summary (single place for window / length / SoC / cost) ──────────
+  # ── Plan summary ──────────────────────────────────────────────────────────
   - type: markdown
     content: >
       {% set mode = states('select.myszolot_charge_mode') %}
@@ -34,6 +34,8 @@ cards:
       {% set soc = states('sensor.myszolot_battery_level') %}
 
       {% set end_soc = states('sensor.myszolot_expected_end_soc') %}
+
+      {% set max_soc = states('sensor.myszolot_max_reachable_soc') %}
 
       {% set cost = states('sensor.myszolot_charge_schedule') %}
 
@@ -47,13 +49,35 @@ cards:
 
       {% set end = state_attr('sensor.myszolot_charge_schedule', 'planned_session_end') %}
 
+      {% set target = state_attr('sensor.myszolot_charge_reason', 'target_soc') %}
+
+      {% set feasible = state_attr('sensor.myszolot_charge_reason', 'feasible') %}
+
+      {% set shortfall = state_attr('sensor.myszolot_charge_reason', 'shortfall_soc') %}
+
+      {% set rem = states('sensor.myszolot_override_remaining') %}
+
       {% set hours = (mins // 60) %}
 
-      {% set rem = (mins % 60) %}
+      {% set remm = (mins % 60) %}
 
       ### Plan
 
-      **{{ mode }}** · `{{ reason }}`
+      **{{ mode }}** · `{{ reason }}` · target **{{ target }}%**
+
+
+      {% if mode == 'override' %}
+
+      Override window remaining: **{{ rem }}**
+
+      {% endif %}
+
+
+      {% if feasible is defined and feasible == false %}
+
+      ⚠️ **Target may be unreachable** at {{ amps }}A — max ~**{{ max_soc }}%** (shortfall ~{{ shortfall }}%)
+
+      {% endif %}
 
 
       {% if mins > 0 and start %}
@@ -88,9 +112,9 @@ cards:
 
       - **Window:** {{ as_timestamp(start) | timestamp_custom('%H:%M', true) }}–{{ as_timestamp(end) | timestamp_custom('%H:%M', true) }} *({{ rel }})*
 
-      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ rem }}min · **{{ amps }}A** (~{{ kwh }} kWh)
+      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ remm }}min · **{{ amps }}A** (~{{ kwh }} kWh)
 
-      - **SoC:** {{ soc }}% → **~{{ end_soc }}%**
+      - **SoC:** {{ soc }}% → **~{{ end_soc }}%** (max ~{{ max_soc }}%)
 
       - **Planned cost:** ~**{{ cost }} PLN**
 
@@ -100,15 +124,15 @@ cards:
 
       {% endif %}
 
-  # ── Daily modes ───────────────────────────────────────────────────────────
+  # ── Daily smart (default) ─────────────────────────────────────────────────
   - type: markdown
-    content: "**Daily — target 80%**"
+    content: "**Daily smart** — 80% target, skip if already ≥69%, wait for cheap hours"
   - type: grid
-    columns: 3
+    columns: 1
     square: false
     cards:
       - type: button
-        name: Smart
+        name: Smart (default)
         icon: mdi:brain
         tap_action:
           action: call-service
@@ -116,105 +140,34 @@ cards:
           service_data:
             entity_id: select.myszolot_charge_mode
             option: smart
-      - type: button
-        name: Fast now
-        icon: mdi:flash
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: now_fast
-      - type: button
-        name: Slow now
-        icon: mdi:leaf
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: now_slow
 
-  # ── Custom target ─────────────────────────────────────────────────────────
+  # ── Override: target % within N hours ─────────────────────────────────────
   - type: markdown
-    content: "**Custom target**"
+    content: >
+      **Override** — set target % and window, then activate.
+      Uses cheapest hours (no price hard-stop). Auto-returns to smart
+      when target is reached or the window ends.
   - type: entities
     entities:
       - entity: input_number.myszolot_custom_target_soc
         name: Target SoC %
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-      - type: button
-        name: Smart custom
-        icon: mdi:tune
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: smart_custom
-      - type: button
-        name: Charge now
-        icon: mdi:flash-auto
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: now_custom
-
-  # ── Timed window ──────────────────────────────────────────────────────────
-  - type: markdown
-    content: "**Timed window** — start hour + duration, then auto back to smart"
-  - type: entities
-    entities:
-      - entity: input_number.myszolot_timed_start_hour
-        name: Start hour
-      - entity: input_number.myszolot_timed_duration_minutes
-        name: Duration (min)
+      - entity: input_number.myszolot_deadline_hours
+        name: Within hours
   - type: grid
     columns: 1
     square: false
     cards:
       - type: button
-        name: Timed charge
-        icon: mdi:clock-start
+        name: Start override
+        icon: mdi:target
         tap_action:
           action: call-service
           service: select.select_option
           service_data:
             entity_id: select.myszolot_charge_mode
-            option: timed
+            option: override
 
-  # ── Trip ──────────────────────────────────────────────────────────────────
-  - type: markdown
-    content: "**Trip — 95%**"
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-      - type: button
-        name: Plan trip
-        icon: mdi:map-marker-path
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: plan_trip
-      - type: button
-        name: Trip now
-        icon: mdi:car-sports
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: trip_now
-
-  # ── Overrides ─────────────────────────────────────────────────────────────
+  # ── Overrides / Tesla ─────────────────────────────────────────────────────
   - type: entities
     title: Overrides / Tesla
     entities:

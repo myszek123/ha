@@ -6,30 +6,28 @@ from datetime import datetime, timedelta, date as date_type
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     DOMAIN,
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
     DEVICE_TRACKER, SENSOR_CHARGING, NUMBER_CHARGE_CURRENT,
-    MODE_SMART, MODE_NOW_FAST, MODE_NOW_SLOW, MODE_PLAN_TRIP, MODE_TRIP_NOW,
-    MODE_SMART_CUSTOM, MODE_NOW_CUSTOM, MODE_TIMED,
-    CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS, CONF_SLOW_AMPS,
-    CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC, CONF_TRIP_TARGET_SOC,
-    CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD, CONF_PLAN_TRIP_DEADLINE_HOURS,
-    DEFAULT_CHARGER_PHASES, DEFAULT_VOLTAGE, DEFAULT_FAST_AMPS, DEFAULT_SLOW_AMPS,
-    DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC, DEFAULT_TRIP_TARGET_SOC,
+    MODE_SMART, MODE_OVERRIDE,
+    CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS,
+    CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC,
+    CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD,
+    CONF_SMART_DEADLINE_HOURS,
+    DEFAULT_CHARGER_PHASES, DEFAULT_VOLTAGE, DEFAULT_FAST_AMPS,
+    DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
-    DEFAULT_PLAN_TRIP_DEADLINE_HOURS,
-    DEFAULT_TIMED_START_HOUR, DEFAULT_TIMED_DURATION_MINUTES,
+    DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
-    INPUT_NUMBER_TIMED_START_HOUR, INPUT_NUMBER_TIMED_DURATION_MINUTES,
+    INPUT_NUMBER_DEADLINE_HOURS,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
-    REASON_MIN_SOC_FLOOR, REASON_CHARGING_NOW_FAST, REASON_CHARGING_NOW_SLOW,
-    REASON_TRIP_CHARGING_NOW, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
+    REASON_MIN_SOC_FLOOR, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
-    REASON_HOME_NOT_PLUGGED, REASON_CHARGING_NOW_CUSTOM, REASON_TIMED_SESSION_DONE,
+    REASON_HOME_NOT_PLUGGED, REASON_TARGET_UNREACHABLE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,21 +39,14 @@ def _get_pstryk_tomorrow_prices(hass: HomeAssistant, tomorrow_str: str) -> list[
     """
     Extract tomorrow's prices from the pstryk coordinator's internal data.
 
-    The pstryk coordinator stores 48h of prices in coordinator.data["prices"].
-    This function returns entries for the given tomorrow_str date (format: "YYYY-MM-DD").
-
-    Returns an empty list if fewer than 20 entries are found (validation that data exists).
+    Returns an empty list if fewer than 20 entries are found.
     """
     tomorrow_prices = []
 
-    # Search pstryk coordinators in hass.data
     pstryk_data = hass.data.get("pstryk", {})
     for key, coordinator_or_entry in pstryk_data.items():
-        # Keys ending in "_buy" are the ones with price data
         if not key.endswith("_buy"):
             continue
-
-        # Try to get the coordinator's data
         try:
             if hasattr(coordinator_or_entry, "data"):
                 prices_list = coordinator_or_entry.data.get("prices", [])
@@ -64,17 +55,14 @@ def _get_pstryk_tomorrow_prices(hass: HomeAssistant, tomorrow_str: str) -> list[
         except Exception:
             continue
 
-        # Filter for entries matching tomorrow's date
         for entry in prices_list:
             if isinstance(entry, dict):
                 start = entry.get("start", "")
                 if start.startswith(tomorrow_str):
                     tomorrow_prices.append(entry)
 
-    # Sort by start time
     tomorrow_prices.sort(key=lambda e: e.get("start", ""))
 
-    # Validate: if < 20 entries, it's not real data (should be 24 for a full day)
     if len(tomorrow_prices) < 20:
         return []
 
@@ -127,21 +115,51 @@ def build_schedule(
     return sorted(schedule, key=lambda s: s["hour"])
 
 
+def max_energy_in_window(
+    all_prices: list[dict],
+    max_kWh_per_hour: float,
+    now_dt: datetime,
+    deadline_hours: int,
+) -> float:
+    """Max kWh if charging continuously for every eligible hour in the window."""
+    if max_kWh_per_hour <= 0 or deadline_hours <= 0:
+        return 0.0
+
+    now_hour = now_dt.hour
+    if all_prices:
+        n_slots = sum(
+            1
+            for h in all_prices
+            if h["hour"] >= now_hour and h["hour"] < now_hour + deadline_hours
+        )
+        if n_slots > 0:
+            return round(n_slots * max_kWh_per_hour, 4)
+
+    # No price grid — assume continuous availability for deadline_hours
+    return round(deadline_hours * max_kWh_per_hour, 4)
+
+
+def max_reachable_soc(
+    current_soc: float,
+    max_kWh: float,
+    battery_kWh: float,
+) -> float:
+    """Upper-bound SoC if we charge full rate for the whole window."""
+    if battery_kWh <= 0 or max_kWh <= 0:
+        return round(float(current_soc), 1)
+    return round(min(100.0, float(current_soc) + max_kWh / battery_kWh * 100.0), 1)
+
+
 def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
     """
     Group adjacent hours into continuous charging sessions.
 
     A partial first slot in a group is shifted to the tail of that hour so
     charging within the group is uninterrupted.
-
-    Example:
-      [{hour:13, minutes:12}, {hour:14, minutes:60}]
-      → session start=13:48, end=15:00  (72 min continuous)
     """
     if not schedule:
         return []
 
-    # Group into runs of consecutive hours
     groups: list[list[dict]] = []
     current_group = [schedule[0]]
     for slot in schedule[1:]:
@@ -156,17 +174,16 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
     for group in groups:
         first, last = group[0], group[-1]
 
-        # Calculate the actual date for this group (handles hours >= 24)
         day_offset = first["hour"] // 24
         actual_date = ref_date + timedelta(days=day_offset)
         actual_hour = first["hour"] % 24
 
-        # Partial first slot → shift to tail of its hour for uninterrupted charging
         start_minute = (60 - first["minutes"]) if not first["full"] else 0
 
-        start = datetime(actual_date.year, actual_date.month, actual_date.day,
-                         actual_hour, start_minute)
-        # End = start + total allocated minutes; handles midnight crossings naturally
+        start = datetime(
+            actual_date.year, actual_date.month, actual_date.day,
+            actual_hour, start_minute,
+        )
         total_minutes = sum(s["minutes"] for s in group)
         end = start + timedelta(minutes=total_minutes)
 
@@ -215,11 +232,7 @@ def estimate_window_cost(
     fallback_price: float,
     ref_date: date_type,
 ) -> tuple[float, float]:
-    """
-    Estimate kWh and cost for a continuous charge window at constant rate.
-
-    Uses hourly prices when available; falls back to fallback_price.
-    """
+    """Estimate kWh and cost for a continuous charge window at constant rate."""
     if end <= start or max_charge_rate_kW <= 0:
         return 0.0, 0.0
 
@@ -262,54 +275,6 @@ def session_duration_minutes(sessions: list[dict]) -> int:
     return int(round(total))
 
 
-def build_timed_session(
-    start_hour: int,
-    duration_minutes: int,
-    now_dt: datetime,
-    max_charge_rate_kW: float = 0.0,
-    current_price: float = 0.0,
-    all_prices: list[dict] | None = None,
-    roll_if_ended: bool = True,
-) -> list[dict]:
-    """
-    Build a single fixed-window charging session.
-
-    Starts at start_hour:00 local time for duration_minutes.
-    If today's window has already fully ended and roll_if_ended is True,
-    schedule tomorrow's window. If roll_if_ended is False, return [].
-    """
-    if duration_minutes <= 0:
-        return []
-
-    start_hour = max(0, min(23, int(start_hour)))
-    duration_minutes = int(duration_minutes)
-
-    start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-    end = start + timedelta(minutes=duration_minutes)
-
-    # Window fully over
-    if now_dt >= end:
-        if not roll_if_ended:
-            return []
-        start = start + timedelta(days=1)
-        end = start + timedelta(minutes=duration_minutes)
-
-    total_kWh, total_cost = estimate_window_cost(
-        start, end, max_charge_rate_kW, all_prices, current_price, now_dt.date()
-    )
-
-    return [
-        {
-            "start": start,
-            "end": end,
-            "slots": [],
-            "total_kWh": total_kWh,
-            "total_cost": total_cost,
-            "duration_minutes": duration_minutes,
-        }
-    ]
-
-
 def determine_reason(
     mode: str,
     is_home: bool,
@@ -318,20 +283,19 @@ def determine_reason(
     target_soc: int,
     min_soc: int,
     charge_start_soc: int,
-    fast_amps: int,
-    slow_amps: int,
+    charge_amps: int,
     sessions: list[dict],
     now_dt: datetime,
     E_needed: float,
     schedule_all_prices_above_max: bool,
     is_externally_charging: bool = False,
     charging_started: bool = False,
+    feasible: bool = True,
 ) -> tuple[str, bool, int]:
     """
     Determine the charging reason, whether to charge, and target amps.
 
     Returns (reason, should_charge, target_amps).
-    Priority order follows the coordinator spec.
     """
     # 1. Not home
     if not is_home:
@@ -344,26 +308,16 @@ def determine_reason(
 
     # 3. Emergency: SoC below floor and cable plugged in
     if current_soc < min_soc and cable_connected:
-        return REASON_MIN_SOC_FLOOR, True, fast_amps
+        return REASON_MIN_SOC_FLOOR, True, charge_amps
 
-    # 4-6. Immediate manual modes (cable check is the actuator's concern)
-    if mode == MODE_NOW_FAST:
-        return REASON_CHARGING_NOW_FAST, True, fast_amps
-
-    if mode == MODE_NOW_SLOW:
-        return REASON_CHARGING_NOW_SLOW, True, slow_amps
-
-    if mode == MODE_TRIP_NOW:
-        return REASON_TRIP_CHARGING_NOW, True, fast_amps
-
-    # 7. Scheduled modes
+    # 4. Smart (daily default) — price gate + charge_start_soc debounce
     if mode == MODE_SMART:
         if not charging_started and current_soc > charge_start_soc:
             return REASON_SOC_SUFFICIENT, False, 0
         if schedule_all_prices_above_max:
             return REASON_PRICE_TOO_HIGH, False, 0
         if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, fast_amps
+            return REASON_SCHEDULED, True, charge_amps
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
@@ -371,46 +325,20 @@ def determine_reason(
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
-    if mode == MODE_PLAN_TRIP:
-        # No charge_start_soc check — always try to reach trip target
-        if schedule_all_prices_above_max:
-            return REASON_PRICE_TOO_HIGH, False, 0
+    # 5. Override — reach target within deadline; no price hard-stop, no SoC debounce
+    if mode == MODE_OVERRIDE:
         if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, fast_amps
+            return REASON_SCHEDULED, True, charge_amps
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
         if E_needed > 0:
+            if not feasible:
+                return REASON_TARGET_UNREACHABLE, False, 0
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
-    if mode == MODE_NOW_CUSTOM:
-        return REASON_CHARGING_NOW_CUSTOM, True, fast_amps
-
-    if mode == MODE_SMART_CUSTOM:
-        # No charge_start_soc gate — user explicitly chose a custom target
-        if schedule_all_prices_above_max:
-            return REASON_PRICE_TOO_HIGH, False, 0
-        if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, fast_amps
-        ns = next_session(sessions, now_dt)
-        if ns:
-            return REASON_WAITING_FOR_SESSION, False, 0
-        if E_needed > 0:
-            return REASON_NO_ELIGIBLE_HOURS, False, 0
-        return REASON_TARGET_REACHED, False, 0
-
-    if mode == MODE_TIMED:
-        # Fixed clock window — no price gate, no charge_start_soc gate.
-        # SoC target is only a ceiling (coordinator auto-resets when reached).
-        if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, fast_amps
-        ns = next_session(sessions, now_dt)
-        if ns:
-            return REASON_WAITING_FOR_SESSION, False, 0
-        return REASON_TIMED_SESSION_DONE, False, 0
-
-    # 8. Fallback: home but not plugged in
+    # 6. Fallback
     return REASON_HOME_NOT_PLUGGED, False, 0
 
 
@@ -475,19 +403,64 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
         self._charging_started: bool = False
-        # One-shot timed window: (start, end) locked in when mode is selected
-        self._timed_window: tuple[datetime, datetime] | None = None
+        # Locked when override is selected (target + absolute deadline)
+        self._override_target_soc: int | None = None
+        self._override_deadline: datetime | None = None
+        self._override_deadline_hours: int | None = None
         self._unsub_listeners: list = []
 
     @property
     def mode(self) -> str:
         return self._mode
 
+    def _read_helper_int(self, entity_id: str, default: int) -> int:
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in _UNAVAILABLE:
+            return default
+        try:
+            return int(float(state.state))
+        except (ValueError, TypeError):
+            return default
+
     def set_mode(self, mode: str) -> None:
-        if mode != self._mode:
-            # Fresh mode selection clears one-shot timed tracking
-            self._timed_window = None
+        """Select smart (default) or override (locked target + deadline)."""
+        if mode not in (MODE_SMART, MODE_OVERRIDE):
+            _LOGGER.warning("Unknown mode %s; ignoring", mode)
+            return
+
+        prev = self._mode
         self._mode = mode
+
+        if mode == MODE_OVERRIDE:
+            hours = max(1, min(48, self._read_helper_int(
+                INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
+            )))
+            target = max(50, min(100, self._read_helper_int(
+                INPUT_NUMBER_CUSTOM_TARGET_SOC, DEFAULT_TARGET_SOC
+            )))
+            now = datetime.now()
+            self._override_deadline_hours = hours
+            self._override_target_soc = target
+            self._override_deadline = now + timedelta(hours=hours)
+            _LOGGER.info(
+                "Override locked: target=%d%% within %dh (deadline %s)",
+                target, hours, self._override_deadline,
+            )
+        else:
+            self._override_target_soc = None
+            self._override_deadline = None
+            self._override_deadline_hours = None
+
+        if mode != prev:
+            self._charging_started = False
+
+    def _reset_to_smart(self, reason: str) -> None:
+        _LOGGER.info("Resetting mode to smart (%s)", reason)
+        self._mode = MODE_SMART
+        self._override_target_soc = None
+        self._override_deadline = None
+        self._override_deadline_hours = None
+        self._charging_started = False
 
     async def async_setup(self) -> None:
         """Register state-change listeners for all relevant external entities."""
@@ -497,9 +470,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             DEVICE_TRACKER,
             SENSOR_PRICE,
             NUMBER_CHARGE_CURRENT,
-            INPUT_NUMBER_TIMED_START_HOUR,
-            INPUT_NUMBER_TIMED_DURATION_MINUTES,
             INPUT_NUMBER_CUSTOM_TARGET_SOC,
+            INPUT_NUMBER_DEADLINE_HOURS,
         ]
 
         @callback
@@ -521,59 +493,50 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         cfg = {**self.config_entry.data, **(self.config_entry.options or {})}
 
         fast_amps: int = cfg.get(CONF_FAST_AMPS, DEFAULT_FAST_AMPS)
-        slow_amps: int = cfg.get(CONF_SLOW_AMPS, DEFAULT_SLOW_AMPS)
         battery_kWh: float = cfg.get(CONF_BATTERY_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)
         default_target_soc: int = cfg.get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC)
-        trip_target_soc: int = cfg.get(CONF_TRIP_TARGET_SOC, DEFAULT_TRIP_TARGET_SOC)
         min_soc: int = cfg.get(CONF_MIN_SOC, DEFAULT_MIN_SOC)
         charge_start_soc: int = cfg.get(CONF_CHARGE_START_SOC, DEFAULT_CHARGE_START_SOC)
         max_price_threshold: float = cfg.get(CONF_MAX_PRICE_THRESHOLD, DEFAULT_MAX_PRICE_THRESHOLD)
-        plan_trip_deadline_hours: int = cfg.get(CONF_PLAN_TRIP_DEADLINE_HOURS, DEFAULT_PLAN_TRIP_DEADLINE_HOURS)
+        smart_deadline_hours: int = cfg.get(
+            CONF_SMART_DEADLINE_HOURS, DEFAULT_SMART_DEADLINE_HOURS
+        )
         charger_phases: int = cfg.get(CONF_CHARGER_PHASES, DEFAULT_CHARGER_PHASES)
         voltage: int = cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
 
-        # Prefer live Tessie charge-current setting for energy estimates / rate.
-        # Falls back to configured fast_amps (default 12 A).
         tesla_current_state = self.hass.states.get(NUMBER_CHARGE_CURRENT)
         tesla_amps_raw = _parse_float(tesla_current_state)
         charge_amps: int = int(tesla_amps_raw) if tesla_amps_raw and tesla_amps_raw > 0 else fast_amps
-
-        # kW at the amps actually set on the car (3-phase wallbox assumption)
         max_charge_rate_kW: float = charge_amps * voltage * charger_phases / 1000
 
+        now = datetime.now()
         mode = self._mode
 
-        # Read custom target SoC (soft dependency — defaults to 80 if helper missing)
-        custom_target_state = self.hass.states.get(INPUT_NUMBER_CUSTOM_TARGET_SOC)
-        custom_target_soc = int(float(custom_target_state.state)) if (
-            custom_target_state is not None
-            and custom_target_state.state not in _UNAVAILABLE
-        ) else default_target_soc
+        # Override expiry: deadline passed → fall back to smart
+        if mode == MODE_OVERRIDE and self._override_deadline is not None:
+            if now >= self._override_deadline:
+                self._reset_to_smart("override deadline reached")
+                mode = MODE_SMART
 
-        # Timed-mode window helpers (soft dependency)
-        timed_start_state = self.hass.states.get(INPUT_NUMBER_TIMED_START_HOUR)
-        timed_start_hour = int(float(timed_start_state.state)) if (
-            timed_start_state is not None
-            and timed_start_state.state not in _UNAVAILABLE
-        ) else DEFAULT_TIMED_START_HOUR
-
-        timed_duration_state = self.hass.states.get(INPUT_NUMBER_TIMED_DURATION_MINUTES)
-        timed_duration_minutes = int(float(timed_duration_state.state)) if (
-            timed_duration_state is not None
-            and timed_duration_state.state not in _UNAVAILABLE
-        ) else DEFAULT_TIMED_DURATION_MINUTES
-
-        # Determine target SoC for current mode
-        if mode in (MODE_PLAN_TRIP, MODE_TRIP_NOW):
-            target_soc = trip_target_soc
-        elif mode in (MODE_SMART_CUSTOM, MODE_NOW_CUSTOM):
-            target_soc = custom_target_soc
+        # Target / deadline for current mode
+        if mode == MODE_OVERRIDE:
+            target_soc = self._override_target_soc if self._override_target_soc is not None else (
+                self._read_helper_int(INPUT_NUMBER_CUSTOM_TARGET_SOC, default_target_soc)
+            )
+            if self._override_deadline is not None:
+                remaining = (self._override_deadline - now).total_seconds() / 3600.0
+                deadline_hours = max(1, int(remaining + 0.999))  # ceil hours left
+            else:
+                deadline_hours = self._read_helper_int(
+                    INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
+                )
+            use_price_cap = False
         else:
             target_soc = default_target_soc
+            deadline_hours = smart_deadline_hours
+            use_price_cap = True
 
-        # Read external entity states
-        now = datetime.now()
-
+        # External entity states
         soc_state = self.hass.states.get(SENSOR_SOC)
         current_soc = _parse_float(soc_state) or 0.0
 
@@ -599,108 +562,58 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         all_prices = _parse_all_prices(price_state)
 
-        # Append tomorrow's prices when we may schedule overnight / timed windows
-        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM, MODE_TIMED):
+        # Append tomorrow prices when the window may span overnight
+        if deadline_hours > (24 - now.hour) or deadline_hours >= 24:
             tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
             tomorrow_raw = _get_pstryk_tomorrow_prices(self.hass, tomorrow_str)
             for j, entry in enumerate(tomorrow_raw):
                 price = float(entry.get("price", 0))
                 all_prices.append({"hour": 24 + j, "price": price})
 
-        # Auto-reset non-smart modes when SoC reaches target
-        if current_soc >= target_soc and mode not in (MODE_SMART, MODE_SMART_CUSTOM):
-            _LOGGER.info(
-                "SoC %.1f%% >= target %d%%; resetting mode from %s to smart",
-                current_soc, target_soc, mode,
-            )
-            self._mode = MODE_SMART
+        # Override complete: target reached → back to smart
+        if mode == MODE_OVERRIDE and current_soc >= target_soc:
+            self._reset_to_smart(f"override target {target_soc}% reached (SoC {current_soc:.1f}%)")
             mode = MODE_SMART
             target_soc = default_target_soc
-            self._timed_window = None
+            deadline_hours = smart_deadline_hours
+            use_price_cap = True
 
-        # Clear charging_started flag when target is reached
         if current_soc >= target_soc:
             self._charging_started = False
 
         E_needed = max(0.0, (target_soc - current_soc) / 100.0 * battery_kWh)
 
-        # Build schedule for scheduled modes
         sessions: list[dict] = []
         schedule_all_prices_above_max = False
+        feasible = True
+        max_kwh_window = 0.0
+        max_soc = round(current_soc, 1)
 
-        if mode in (MODE_SMART, MODE_PLAN_TRIP, MODE_SMART_CUSTOM) and E_needed > 0:
-            deadline_hours = plan_trip_deadline_hours if mode == MODE_PLAN_TRIP else 48
+        if E_needed > 0:
+            max_kwh_window = max_energy_in_window(
+                all_prices, max_charge_rate_kW, now, deadline_hours
+            )
+            max_soc = max_reachable_soc(current_soc, max_kwh_window, battery_kWh)
+            feasible = max_soc + 0.05 >= float(target_soc)
 
-            # Check if hours exist at all (without price cap) vs with price cap
+            price_cap = max_price_threshold if use_price_cap else None
+
             uncapped = build_schedule(
                 all_prices, E_needed, max_charge_rate_kW, now,
                 deadline_hours=deadline_hours, max_price=None,
             )
             capped = build_schedule(
                 all_prices, E_needed, max_charge_rate_kW, now,
-                deadline_hours=deadline_hours, max_price=max_price_threshold,
+                deadline_hours=deadline_hours, max_price=price_cap,
             )
 
-            if not capped and uncapped:
-                # Eligible hours exist but all exceed the price threshold
+            if use_price_cap and not capped and uncapped:
                 schedule_all_prices_above_max = True
 
-            sessions = compute_sessions(capped, now.date())
-
-        elif mode == MODE_TIMED:
-            # One-shot: lock the next window on first evaluation after selecting
-            # timed; when that end time is reached, always return to smart.
-            if self._timed_window is None:
-                candidate = build_timed_session(
-                    timed_start_hour,
-                    timed_duration_minutes,
-                    now,
-                    max_charge_rate_kW=max_charge_rate_kW,
-                    current_price=current_price,
-                    all_prices=all_prices,
-                    roll_if_ended=True,
-                )
-                if candidate:
-                    self._timed_window = (candidate[0]["start"], candidate[0]["end"])
-                    _LOGGER.info(
-                        "Timed window locked: %s → %s",
-                        self._timed_window[0], self._timed_window[1],
-                    )
-
-            if self._timed_window is not None:
-                win_start, win_end = self._timed_window
-                if now >= win_end:
-                    _LOGGER.info(
-                        "Timed session ended at %s; resetting mode to smart",
-                        win_end,
-                    )
-                    self._mode = MODE_SMART
-                    mode = MODE_SMART
-                    target_soc = default_target_soc
-                    sessions = []
-                    self._timed_window = None
-                else:
-                    kwh, cost = estimate_window_cost(
-                        win_start,
-                        win_end,
-                        max_charge_rate_kW,
-                        all_prices,
-                        current_price,
-                        now.date(),
-                    )
-                    duration = int(round((win_end - win_start).total_seconds() / 60))
-                    sessions = [
-                        {
-                            "start": win_start,
-                            "end": win_end,
-                            "slots": [],
-                            "total_kWh": kwh,
-                            "total_cost": cost,
-                            "duration_minutes": duration,
-                        }
-                    ]
-            else:
-                sessions = []
+            # Override always uses uncapped (cheapest hours regardless of price).
+            # Smart uses price cap when hours are affordable.
+            plan = uncapped if not use_price_cap else capped
+            sessions = compute_sessions(plan, now.date())
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,
@@ -710,22 +623,19 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             target_soc=target_soc,
             min_soc=min_soc,
             charge_start_soc=charge_start_soc,
-            # Use live Tesla amps for "fast" so actuator keeps Tessie's 12 A
-            fast_amps=charge_amps,
-            slow_amps=slow_amps,
+            charge_amps=charge_amps,
             sessions=sessions,
             now_dt=now,
             E_needed=E_needed,
             schedule_all_prices_above_max=schedule_all_prices_above_max,
             is_externally_charging=is_externally_charging,
             charging_started=self._charging_started,
+            feasible=feasible,
         )
 
-        # Set flag when a scheduled session starts
         if reason == REASON_SCHEDULED:
             self._charging_started = True
 
-        # Reminders prefer garage vision; override affects scheduling, not notifications.
         car_in_garage = _car_in_garage(self.hass, is_home_actual)
         cable_needed = should_charge and not cable_connected and car_in_garage
         ns = next_session(sessions, now)
@@ -735,7 +645,14 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         planned_minutes = session_duration_minutes(sessions)
         exp_soc = expected_end_soc(current_soc, planned_kwh, battery_kWh, target_soc)
 
-        # Prefer the soonest relevant window for display (active or next)
+        # If schedule exists but cannot hit target, mark unfeasible for UI
+        if E_needed > 0 and planned_kwh + 0.05 < E_needed:
+            feasible = False
+            if max_soc < float(target_soc):
+                max_soc = max_reachable_soc(current_soc, max_kwh_window, battery_kWh)
+
+        shortfall_soc = round(max(0.0, float(target_soc) - max_soc), 1)
+
         planned_start = None
         planned_end = None
         if sessions:
@@ -744,8 +661,13 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             planned_start = display["start"]
             planned_end = display["end"]
 
+        override_remaining_min = 0
+        if mode == MODE_OVERRIDE and self._override_deadline is not None:
+            override_remaining_min = max(
+                0, int(round((self._override_deadline - now).total_seconds() / 60.0))
+            )
+
         return {
-            # Always report the authoritative coordinator mode (not a local copy)
             "mode": self._mode,
             "reason": reason,
             "should_charge": should_charge,
@@ -755,6 +677,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "current_price": current_price,
             "current_soc": current_soc,
             "target_soc": target_soc,
+            "deadline_hours": deadline_hours,
+            "override_deadline": self._override_deadline,
+            "override_remaining_minutes": override_remaining_min,
+            "feasible": feasible,
+            "max_reachable_soc": max_soc,
+            "shortfall_soc": shortfall_soc,
             "E_needed": round(E_needed, 3),
             "sessions": sessions,
             "next_session_start": ns["start"] if ns else None,

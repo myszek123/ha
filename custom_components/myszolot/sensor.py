@@ -10,7 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, MODE_OVERRIDE
 from .coordinator import MyszolotCoordinator
 
 
@@ -29,6 +29,7 @@ async def async_setup_entry(
             MyszolotPlannedDurationSensor(coordinator),
             MyszolotOverrideRemainingMinutesSensor(coordinator),
             MyszolotOverrideRemainingSensor(coordinator),
+            MyszolotMaxReachableSocSensor(coordinator),
         ]
     )
 
@@ -62,6 +63,7 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
         ns = d.get("next_session_start")
         ps = d.get("planned_session_start")
         pe = d.get("planned_session_end")
+        od = d.get("override_deadline")
         return {
             "should_charge": d.get("should_charge", False),
             "target_amps": d.get("target_amps", 0),
@@ -71,6 +73,10 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "current_price": d.get("current_price", 0.0),
             "current_soc": d.get("current_soc", 0.0),
             "target_soc": d.get("target_soc", 80),
+            "deadline_hours": d.get("deadline_hours"),
+            "feasible": d.get("feasible", True),
+            "max_reachable_soc": d.get("max_reachable_soc"),
+            "shortfall_soc": d.get("shortfall_soc", 0.0),
             "expected_end_soc": d.get("expected_end_soc"),
             "E_needed": d.get("E_needed", 0.0),
             "planned_kwh": d.get("planned_kwh", 0.0),
@@ -79,6 +85,8 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "planned_session_start": ps.isoformat() if ps else None,
             "planned_session_end": pe.isoformat() if pe else None,
             "next_session_start": ns.isoformat() if ns else None,
+            "override_deadline": od.isoformat() if od else None,
+            "override_remaining_minutes": d.get("override_remaining_minutes", 0),
             "location_override_active": d.get("location_override_active", False),
         }
 
@@ -129,10 +137,14 @@ class MyszolotChargeScheduleSensor(_MyszolotBaseSensor):
             "planned_session_start": ps.isoformat() if ps else None,
             "planned_session_end": pe.isoformat() if pe else None,
             "expected_end_soc": d.get("expected_end_soc"),
+            "max_reachable_soc": d.get("max_reachable_soc"),
+            "feasible": d.get("feasible", True),
+            "shortfall_soc": d.get("shortfall_soc", 0.0),
             "charge_amps": d.get("charge_amps", 0),
             "charge_rate_kw": d.get("charge_rate_kw", 0.0),
             "current_soc": d.get("current_soc", 0.0),
             "target_soc": d.get("target_soc", 80),
+            "deadline_hours": d.get("deadline_hours"),
         }
 
 
@@ -147,7 +159,6 @@ class MyszolotNextSessionSensor(_MyszolotBaseSensor):
 
     @property
     def native_value(self) -> datetime | None:
-        # Prefer planned start (covers active window) then next future start
         dt = self._data.get("planned_session_start") or self._data.get("next_session_start")
         if dt is None:
             return None
@@ -190,8 +201,26 @@ class MyszolotPlannedDurationSensor(_MyszolotBaseSensor):
         return int(self._data.get("planned_duration_minutes", 0) or 0)
 
 
+class MyszolotMaxReachableSocSensor(_MyszolotBaseSensor):
+    """sensor.myszolot_max_reachable_soc — upper-bound SoC within deadline at full rate."""
+
+    _attr_icon = "mdi:battery-alert"
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "myszolot_max_reachable_soc",
+            "Myszolot Max Reachable SoC",
+        )
+
+    @property
+    def state(self) -> float | None:
+        return self._data.get("max_reachable_soc")
+
+
 class MyszolotOverrideRemainingMinutesSensor(_MyszolotBaseSensor):
-    """sensor.myszolot_override_remaining_minutes — always 0 (no timeout feature)."""
+    """sensor.myszolot_override_remaining_minutes — minutes left on override deadline."""
 
     _attr_icon = "mdi:timer"
     _attr_native_unit_of_measurement = "min"
@@ -205,14 +234,13 @@ class MyszolotOverrideRemainingMinutesSensor(_MyszolotBaseSensor):
 
     @property
     def state(self) -> int:
-        # Non-smart modes have no time-based expiry in this integration.
-        return 0
+        return int(self._data.get("override_remaining_minutes", 0) or 0)
 
 
 class MyszolotOverrideRemainingSensor(_MyszolotBaseSensor):
-    """sensor.myszolot_override_remaining — always 'Off' (no timeout feature)."""
+    """sensor.myszolot_override_remaining — human-readable override status."""
 
-    _attr_icon = "mdi:timer-off"
+    _attr_icon = "mdi:timer-outline"
 
     def __init__(self, coordinator: MyszolotCoordinator) -> None:
         super().__init__(
@@ -223,4 +251,13 @@ class MyszolotOverrideRemainingSensor(_MyszolotBaseSensor):
 
     @property
     def state(self) -> str:
-        return "Off"
+        d = self._data
+        if d.get("mode") != MODE_OVERRIDE:
+            return "Off"
+        mins = int(d.get("override_remaining_minutes", 0) or 0)
+        if mins <= 0:
+            return "Expired"
+        hours, rem = divmod(mins, 60)
+        if hours:
+            return f"{hours}h {rem}m"
+        return f"{rem}m"
