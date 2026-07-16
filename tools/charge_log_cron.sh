@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Hourly refresh of home charging log (Tessie home-only + Pstryk prices → CSV + Sheet).
+# Daily refresh of home charging log (Tessie home-only + Pstryk → CSV + Sheet).
+# Not on charge-session end — full rebuild of all tabs once per day.
 set -euo pipefail
 export PATH="/usr/bin:/bin:$HOME/claude-projects/ha/.venv-sheets/bin:$PATH"
 # shellcheck disable=SC1090

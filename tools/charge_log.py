@@ -45,6 +45,10 @@ HOME_LON = 21.067841204650904
 HOME_RADIUS_M = 200
 HOME_SAVED_SUBSTRINGS = ("bluszcz",)
 
+# Skip sessions before this date (Warsaw). Earlier kWh exist but prices were
+# another supplier (Pstryk meter only); costs would be wrong.
+MIN_SESSION_DATE = datetime(2026, 3, 1, tzinfo=WARSAW)
+
 # Per-session log (full variable price = Pstryk price_gross)
 FIELDS = [
     "session_id",
@@ -582,11 +586,21 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
         prices = export_pstryk_prices()
     print(f"  {len(prices)} hourly prices", file=sys.stderr)
 
-    rows = [
-        charge_to_row(c, prices)
-        for c in sorted(home, key=lambda x: x["started_at"])
-        if float(c.get("energy_added") or 0) >= 0.1
-    ]
+    rows = []
+    skipped_pre = 0
+    for c in sorted(home, key=lambda x: x["started_at"]):
+        if float(c.get("energy_added") or 0) < 0.1:
+            continue
+        if ts_local(int(c["started_at"])) < MIN_SESSION_DATE:
+            skipped_pre += 1
+            continue
+        rows.append(charge_to_row(c, prices))
+    if skipped_pre:
+        print(
+            f"  skipped {skipped_pre} sessions before {MIN_SESSION_DATE.date()} "
+            f"(pre-Pstryk billing)",
+            file=sys.stderr,
+        )
     write_csv(rows, args.out, FIELDS)
 
     print("Monthly totals from Pstryk API…", file=sys.stderr)
