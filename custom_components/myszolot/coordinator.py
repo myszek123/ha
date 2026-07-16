@@ -640,8 +640,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         cable_needed = should_charge and not cable_connected and car_in_garage
         ns = next_session(sessions, now)
 
-        planned_kwh = round(sum(s.get("total_kWh", 0.0) for s in sessions), 4)
-        planned_cost = round(sum(s.get("total_cost", 0.0) for s in sessions), 4)
+        planned_kwh = round(sum(s.get("total_kWh", 0.0) for s in sessions), 2)
+        planned_cost = round(sum(s.get("total_cost", 0.0) for s in sessions), 2)
         planned_minutes = session_duration_minutes(sessions)
         exp_soc = expected_end_soc(current_soc, planned_kwh, battery_kWh, target_soc)
 

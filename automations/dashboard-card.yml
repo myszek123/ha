@@ -1,24 +1,24 @@
 # Myszolot charging panel for Overview.
-# Smart (default) + temporary override (target % within N hours).
+# Smart (80%) + temporary override (target % within N hours).
 type: vertical-stack
 cards:
-  # ── Status ────────────────────────────────────────────────────────────────
+  # ── Status (Decision / Mode / Battery / Cable) ─────────────────────────────
   - type: grid
     columns: 2
     square: false
     cards:
       - type: tile
-        entity: sensor.myszolot_battery_level
-        name: Battery
-        icon: mdi:car-electric
+        entity: sensor.myszolot_charge_reason
+        name: Decision
+        icon: mdi:head-cog-outline
       - type: tile
         entity: select.myszolot_charge_mode
         name: Mode
         icon: mdi:ev-station
       - type: tile
-        entity: sensor.myszolot_charge_reason
-        name: Decision
-        icon: mdi:head-cog-outline
+        entity: sensor.myszolot_battery_level
+        name: Battery
+        icon: mdi:car-electric
       - type: tile
         entity: binary_sensor.myszolot_charge_cable
         name: Cable
@@ -37,13 +37,13 @@ cards:
 
       {% set max_soc = states('sensor.myszolot_max_reachable_soc') %}
 
-      {% set cost = states('sensor.myszolot_charge_schedule') %}
+      {% set cost = states('sensor.myszolot_charge_schedule') | float(0) %}
 
       {% set mins = states('sensor.myszolot_planned_session_duration') | int(0) %}
 
       {% set amps = state_attr('sensor.myszolot_charge_reason', 'charge_amps') %}
 
-      {% set kwh = state_attr('sensor.myszolot_charge_schedule', 'planned_kwh') %}
+      {% set kwh = state_attr('sensor.myszolot_charge_schedule', 'planned_kwh') | float(0) %}
 
       {% set start = state_attr('sensor.myszolot_charge_schedule', 'planned_session_start') %}
 
@@ -112,11 +112,11 @@ cards:
 
       - **Window:** {{ as_timestamp(start) | timestamp_custom('%H:%M', true) }}–{{ as_timestamp(end) | timestamp_custom('%H:%M', true) }} *({{ rel }})*
 
-      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ remm }}min · **{{ amps }}A** (~{{ kwh }} kWh)
+      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ remm }}min · **{{ amps }}A** (~{{ '%.2f'|format(kwh) }} kWh)
 
       - **SoC:** {{ soc }}% → **~{{ end_soc }}%** (max ~{{ max_soc }}%)
 
-      - **Planned cost:** ~**{{ cost }} PLN**
+      - **Planned cost:** ~**{{ '%.2f'|format(cost) }} PLN**
 
       {% else %}
 
@@ -124,48 +124,42 @@ cards:
 
       {% endif %}
 
-  # ── Daily smart (default) ─────────────────────────────────────────────────
-  - type: markdown
-    content: "**Daily smart** — 80% target, skip if already ≥69%, wait for cheap hours"
-  - type: grid
-    columns: 1
-    square: false
-    cards:
-      - type: button
-        name: Smart (default)
-        icon: mdi:brain
-        tap_action:
-          action: call-service
-          service: select.select_option
-          service_data:
-            entity_id: select.myszolot_charge_mode
-            option: smart
-
-  # ── Override: target % within N hours ─────────────────────────────────────
+  # ── Override params + compact actions ─────────────────────────────────────
   - type: markdown
     content: >
       **Override** — set target % and window, then activate.
-      Uses cheapest hours (no price hard-stop). Auto-returns to smart
-      when target is reached or the window ends.
+      Cheapest hours (no price hard-stop); auto-returns to smart when done.
   - type: entities
     entities:
       - entity: input_number.myszolot_custom_target_soc
         name: Target SoC %
       - entity: input_number.myszolot_deadline_hours
         name: Within hours
-  - type: grid
-    columns: 1
-    square: false
+  # Compact action row: Start override | Smart (80%)
+  - type: horizontal-stack
     cards:
       - type: button
         name: Start override
         icon: mdi:target
+        show_state: false
+        icon_height: 28px
         tap_action:
           action: call-service
           service: select.select_option
           service_data:
             entity_id: select.myszolot_charge_mode
             option: override
+      - type: button
+        name: Smart (80%)
+        icon: mdi:brain
+        show_state: false
+        icon_height: 28px
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: smart
 
   # ── Overrides / Tesla ─────────────────────────────────────────────────────
   - type: entities
