@@ -551,16 +551,19 @@ for obsolete in ("totals", "monthly", "Arkusz1"):
     except Exception:
         pass
 
-# Order: monthly_total, charging_log, monthly_detail, then anything else
-order = []
-for name in ("monthly_total", "charging_log", "monthly_detail"):
-    try:
-        order.append(sh.worksheet(name))
-    except Exception:
-        pass
-rest = [w for w in sh.worksheets() if w not in order]
-if order:
-    sh.reorder_worksheets(order + rest)
+# Order: monthly_total, charging_log, monthly_detail (best-effort)
+try:
+    order = []
+    for name in ("monthly_total", "charging_log", "monthly_detail"):
+        try:
+            order.append(sh.worksheet(name))
+        except Exception:
+            pass
+    rest = [w for w in sh.worksheets() if w not in order]
+    if order and len(order) + len(rest) == len(sh.worksheets()):
+        sh.reorder_worksheets(order + rest)
+except Exception as e:
+    print("reorder warn", e)
 
 print(sh.url)
 """
