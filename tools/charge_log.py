@@ -66,6 +66,18 @@ FIELDS = [
     "notes",
 ]
 
+# Sheet charging_log — one row per session (dates, duration, kWh, full price)
+SHEET_SESSION_FIELDS = [
+    "start_local",
+    "end_local",
+    "duration_min",
+    "kwh_added",
+    "avg_full_price_pln_kwh",
+    "full_cost_pln",
+    "soc_start",
+    "soc_end",
+]
+
 # Detailed monthly (CSV + optional internal use)
 MONTHLY_FIELDS = [
     "month",
@@ -89,8 +101,8 @@ MONTHLY_FIELDS = [
     "source",
 ]
 
-# Simple sheet tab only — fixed fees already folded into EV / homelab totals
-SIMPLE_MONTHLY_FIELDS = [
+# Sheet tab "monthly_total" — fixed fees already folded into EV / homelab
+MONTHLY_TOTAL_FIELDS = [
     "month",
     "grand_total",   # full PPE bill (Pstryk API ≈ invoice)
     "ev_total",      # charging, full cost incl. share of fixed fees
@@ -473,14 +485,20 @@ def monthly_to_simple(monthly_rows: list[dict]) -> list[dict]:
 
 
 def push_sheet(session_rows: list[dict], monthly_rows: list[dict], sheet_id: str) -> str:
+    """
+    Sheet tabs:
+      monthly_total  — month / grand / EV / homelab
+      charging_log   — each session: start, end, duration, kWh, full price
+      monthly_detail — full breakdown (optional)
+    """
     simple_rows = monthly_to_simple(monthly_rows)
     payload = {
         "session_rows": session_rows,
-        "session_fields": FIELDS,
+        "session_fields": SHEET_SESSION_FIELDS,
         "monthly_rows": monthly_rows,
         "monthly_fields": MONTHLY_FIELDS,
         "simple_rows": simple_rows,
-        "simple_fields": SIMPLE_MONTHLY_FIELDS,
+        "simple_fields": MONTHLY_TOTAL_FIELDS,
         "sheet_id": sheet_id,
         "creds": str(SA_CREDS),
         "updated": datetime.now(WARSAW).isoformat(timespec="seconds"),
@@ -514,23 +532,31 @@ def upsert(title, fields, rows, min_rows=100):
         ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
     return ws
 
-# Main simple view first (also becomes readable on Arkusz1)
-upsert("totals", p["simple_fields"], p["simple_rows"], 50)
+# Desired tabs
+upsert("monthly_total", p["simple_fields"], p["simple_rows"], 50)
 upsert("charging_log", p["session_fields"], p["session_rows"], 2000)
 upsert("monthly_detail", p["monthly_fields"], p["monthly_rows"], 50)
 
-# Keep first sheet as the same simple table (easy open)
-try:
-    s1 = sh.sheet1
-    s1.clear()
-    s1.update(
-        range_name="A1",
-        values=[p["simple_fields"]]
-        + [[r.get(f, "") for f in p["simple_fields"]] for r in p["simple_rows"]],
-        value_input_option="USER_ENTERED",
-    )
-except Exception as e:
-    print("sheet1 warn", e)
+# Remove obsolete tab names if present
+for obsolete in ("totals", "monthly", "Arkusz1"):
+    try:
+        if obsolete in [w.title for w in sh.worksheets()] and len(sh.worksheets()) > 1:
+            # never delete last sheet; skip Arkusz1 rename by clearing only if empty name conflict
+            if obsolete in ("totals", "monthly"):
+                sh.del_worksheet(sh.worksheet(obsolete))
+    except Exception:
+        pass
+
+# Order: monthly_total, charging_log, monthly_detail, then anything else
+order = []
+for name in ("monthly_total", "charging_log", "monthly_detail"):
+    try:
+        order.append(sh.worksheet(name))
+    except Exception:
+        pass
+rest = [w for w in sh.worksheets() if w not in order]
+if order:
+    sh.reorder_worksheets(order + rest)
 
 print(sh.url)
 """
