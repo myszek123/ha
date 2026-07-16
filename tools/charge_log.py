@@ -66,19 +66,20 @@ FIELDS = [
     "notes",
 ]
 
+# Detailed monthly (CSV + optional internal use)
 MONTHLY_FIELDS = [
     "month",
     "house_kwh",
-    "house_total_pln",       # full bill from Pstryk API (≈ invoice)
+    "house_total_pln",
     "ev_kwh",
-    "ev_full_variable_pln",  # sessions × full_price
+    "ev_full_variable_pln",
     "ev_fixed_share_pln",
     "ev_total_pln",
     "homelab_kwh",
     "homelab_full_variable_pln",
     "homelab_fixed_share_pln",
     "homelab_total_pln",
-    "fixed_fees_pln",        # bucket C — fixed distribution (brutto)
+    "fixed_fees_pln",
     "energy_net",
     "service_net",
     "var_dist_net",
@@ -86,6 +87,14 @@ MONTHLY_FIELDS = [
     "excise",
     "vat",
     "source",
+]
+
+# Simple sheet tab only — fixed fees already folded into EV / homelab totals
+SIMPLE_MONTHLY_FIELDS = [
+    "month",
+    "grand_total",   # full PPE bill (Pstryk API ≈ invoice)
+    "ev_total",      # charging, full cost incl. share of fixed fees
+    "homelab_total", # rest of home (incl. lab), full cost incl. share of fixed
 ]
 
 
@@ -448,12 +457,30 @@ def write_csv(rows: list[dict], path: Path, fields: list[str]) -> None:
             w.writerow({k: r.get(k, "") for k in fields})
 
 
+def monthly_to_simple(monthly_rows: list[dict]) -> list[dict]:
+    """Four columns only; fixed fees already inside EV / homelab totals."""
+    simple = []
+    for r in monthly_rows:
+        simple.append(
+            {
+                "month": r.get("month", ""),
+                "grand_total": r.get("house_total_pln", ""),
+                "ev_total": r.get("ev_total_pln", ""),
+                "homelab_total": r.get("homelab_total_pln", ""),
+            }
+        )
+    return simple
+
+
 def push_sheet(session_rows: list[dict], monthly_rows: list[dict], sheet_id: str) -> str:
+    simple_rows = monthly_to_simple(monthly_rows)
     payload = {
         "session_rows": session_rows,
         "session_fields": FIELDS,
         "monthly_rows": monthly_rows,
         "monthly_fields": MONTHLY_FIELDS,
+        "simple_rows": simple_rows,
+        "simple_fields": SIMPLE_MONTHLY_FIELDS,
         "sheet_id": sheet_id,
         "creds": str(SA_CREDS),
         "updated": datetime.now(WARSAW).isoformat(timespec="seconds"),
@@ -477,36 +504,33 @@ def upsert(title, fields, rows, min_rows=100):
         ws = sh.worksheet(title)
         ws.clear()
     except Exception:
-        ws = sh.add_worksheet(title=title, rows=max(min_rows, len(rows) + 20), cols=max(20, len(fields) + 2))
+        ws = sh.add_worksheet(
+            title=title,
+            rows=max(min_rows, len(rows) + 20),
+            cols=max(12, len(fields) + 2),
+        )
     values = [fields] + [[r.get(f, "") for f in fields] for r in rows]
     if values:
         ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
     return ws
 
+# Main simple view first (also becomes readable on Arkusz1)
+upsert("totals", p["simple_fields"], p["simple_rows"], 50)
 upsert("charging_log", p["session_fields"], p["session_rows"], 2000)
-upsert("monthly", p["monthly_fields"], p["monthly_rows"], 50)
+upsert("monthly_detail", p["monthly_fields"], p["monthly_rows"], 50)
 
-# Summary on first sheet
+# Keep first sheet as the same simple table (easy open)
 try:
     s1 = sh.sheet1
     s1.clear()
-    m = p["monthly_rows"][-3:] if p["monthly_rows"] else []
-    summary = [
-        ["Home energy cost split (automated — no PDFs)"],
-        ["Updated", p["updated"]],
-        ["Sessions", len(p["session_rows"])],
-        [],
-        ["Tabs: charging_log = each home charge; monthly = EV / homelab / fixed"],
-        ["full_cost on sessions = Pstryk price_gross (energy + var dist + service + VAT + excise)"],
-        ["fixed_fees = monthly fixed distribution (brutto); allocated by kWh share"],
-        [],
-        ["Recent months (see monthly tab for full)"] + (p["monthly_fields"][:7]),
-    ]
-    for row in m:
-        summary.append([row.get(f, "") for f in p["monthly_fields"][:7]])
-    s1.update(range_name="A1", values=summary, value_input_option="USER_ENTERED")
+    s1.update(
+        range_name="A1",
+        values=[p["simple_fields"]]
+        + [[r.get(f, "") for f in p["simple_fields"]] for r in p["simple_rows"]],
+        value_input_option="USER_ENTERED",
+    )
 except Exception as e:
-    print("summary warn", e)
+    print("sheet1 warn", e)
 
 print(sh.url)
 """
