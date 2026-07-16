@@ -1,0 +1,98 @@
+# Live charge-session bookkeeping for Myszolot.
+# Pairs with tools/charge_log.py (hourly Tessie→Sheet sync is the durable log).
+# This automation only records start/stop markers in HA for debugging and
+# optional future wall-meter deltas.
+#
+# Helpers (create once in UI if missing):
+#   input_datetime.myszolot_charge_session_start  (datetime)
+#   input_number.myszolot_charge_session_start_kwh (box, 0–100, step 0.01)  # Tesla energy_added snapshot
+#   input_text.myszolot_last_charge_summary       (max 255)
+
+- id: myszolot_charge_session_start
+  alias: Myszolot - Charge session start (home)
+  description: >
+    When the car starts charging at home, remember start time and energy_added
+    so a stop event can compute duration/kWh for the live log.
+  triggers:
+    - trigger: state
+      entity_id: sensor.myszolot_charging
+      to: charging
+  conditions:
+    - condition: or
+      conditions:
+        - condition: state
+          entity_id: device_tracker.myszolot_location
+          state: home
+        - condition: state
+          entity_id: binary_sensor.garage_car_present
+          state: "on"
+        - condition: state
+          entity_id: input_boolean.myszolot_location_override
+          state: "on"
+  actions:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.myszolot_charge_session_start
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.myszolot_charge_session_start_kwh
+      data:
+        value: "{{ states('sensor.myszolot_charge_energy_added') | float(0) }}"
+  mode: single
+
+- id: myszolot_charge_session_stop
+  alias: Myszolot - Charge session stop (home) summary
+  description: >
+    When charging stops at home, write a one-line summary helper. Durable
+    history is rebuilt from Tessie + Pstryk by charge_log.py (cron).
+  triggers:
+    - trigger: state
+      entity_id: sensor.myszolot_charging
+      from: charging
+      to:
+        - stopped
+        - complete
+        - no_power
+        - disconnected
+  conditions:
+    - condition: or
+      conditions:
+        - condition: state
+          entity_id: device_tracker.myszolot_location
+          state: home
+        - condition: state
+          entity_id: binary_sensor.garage_car_present
+          state: "on"
+        - condition: state
+          entity_id: input_boolean.myszolot_location_override
+          state: "on"
+  actions:
+    - variables:
+        start_kwh: "{{ states('input_number.myszolot_charge_session_start_kwh') | float(0) }}"
+        end_kwh: "{{ states('sensor.myszolot_charge_energy_added') | float(0) }}"
+        # energy_added resets between sessions; if end < start, use end as session total
+        kwh: >-
+          {% set s = start_kwh %}
+          {% set e = end_kwh %}
+          {{ e if e >= s else e }}
+        start_s: "{{ states('input_datetime.myszolot_charge_session_start') }}"
+        soc: "{{ states('sensor.myszolot_battery_level') }}"
+        price: "{{ states('sensor.pstryk_current_buy_price') | float(0) }}"
+        est: "{{ ((kwh | float(0)) * (price | float(0))) | round(2) }}"
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.myszolot_last_charge_summary
+      data:
+        value: >-
+          {{ now().strftime('%Y-%m-%d %H:%M') }} stop kWh≈{{ kwh }}
+          SoC={{ soc }}% p≈{{ price }} est≈{{ est }}zł start={{ start_s }}
+    - action: persistent_notification.create
+      data:
+        title: Myszolot charge session ended
+        message: >-
+          ~{{ kwh }} kWh · SoC {{ soc }}% · spot {{ price }} PLN/kWh
+          · rough {{ est }} PLN (spot×kWh; final cost from hourly rebuild)
+        notification_id: myszolot_last_charge
+  mode: single
