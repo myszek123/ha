@@ -38,7 +38,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if hass.states.get(eid) is None
     ]
     if missing:
-        hass.components.persistent_notification.async_create(
+        from homeassistant.components.persistent_notification import (
+            async_create as async_create_notification,
+        )
+
+        async_create_notification(
+            hass,
             "Optional helpers not found — some features are disabled until you create them "
             "in **Settings → Devices & Services → Helpers**:\n\n" + "\n".join(missing),
             title="Myszolot: optional helpers missing",
