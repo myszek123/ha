@@ -211,11 +211,13 @@ def summarize_location_group(charges: list[dict], place: str) -> dict:
 
 
 def build_other_location_rows(all_charges: list[dict]) -> list[dict]:
-    """All known Tessie history — Łódź, Brajniki, Superchargers (kWh only)."""
+    """All known Tessie history — home + travel locations (kWh only)."""
+    home = [c for c in all_charges if is_home_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
     lodz = [c for c in all_charges if is_lodz_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
     braj = [c for c in all_charges if is_brajniki_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
     sc = [c for c in all_charges if is_supercharger_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
     return [
+        summarize_location_group(home, "Bluszczańska"),
         summarize_location_group(lodz, "Łódź"),
         summarize_location_group(braj, "Brajniki"),
         summarize_location_group(sc, "Superchargers"),
