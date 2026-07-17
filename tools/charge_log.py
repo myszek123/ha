@@ -113,6 +113,15 @@ MONTHLY_TOTAL_FIELDS = [
     "homelab_total", # rest of home (incl. lab), full cost incl. share of fixed
 ]
 
+# Sheet tab "other_locations" — all Tessie history (no March cutoff)
+OTHER_LOC_FIELDS = [
+    "place",
+    "sessions",
+    "total_kwh",
+    "first_session",
+    "last_session",
+]
+
 
 def load_env() -> None:
     env = Path.home() / ".env.private"
@@ -137,18 +146,80 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r * atan2(sqrt(a), sqrt(1 - a))
 
 
+def _loc_blob(c: dict) -> str:
+    return f"{c.get('saved_location') or ''} {c.get('location') or ''}".lower()
+
+
 def is_home_charge(c: dict) -> bool:
     if c.get("is_supercharger"):
         return False
-    saved = (c.get("saved_location") or "").lower()
-    loc = (c.get("location") or "").lower()
+    blob = _loc_blob(c)
     for s in HOME_SAVED_SUBSTRINGS:
-        if s in saved or s in loc:
+        if s in blob:
             return True
     lat, lon = c.get("latitude"), c.get("longitude")
     if lat is not None and lon is not None:
         return haversine_m(float(lat), float(lon), HOME_LAT, HOME_LON) <= HOME_RADIUS_M
     return False
+
+
+def is_lodz_charge(c: dict) -> bool:
+    """Mother / Łódź city charging (not Supercharger)."""
+    if c.get("is_supercharger"):
+        return False
+    blob = _loc_blob(c)
+    # Family addresses in Łódź
+    if any(x in blob for x in ("leżakowa", "lezakowa", "plenerowa", "paradna")):
+        return True
+    # City name (not only "Łódź Voivodeship" for remote towns)
+    if "łódź, łódź" in blob or "lodz, lodz" in blob:
+        return True
+    if "łódź, łódź voivodeship" in blob or "lodz, lodz voivodeship" in blob:
+        return True
+    return False
+
+
+def is_brajniki_charge(c: dict) -> bool:
+    if c.get("is_supercharger"):
+        return False
+    blob = _loc_blob(c)
+    return "brajnick" in blob or "brajniki" in blob
+
+
+def is_supercharger_charge(c: dict) -> bool:
+    return bool(c.get("is_supercharger"))
+
+
+def summarize_location_group(charges: list[dict], place: str) -> dict:
+    if not charges:
+        return {
+            "place": place,
+            "sessions": 0,
+            "total_kwh": 0.0,
+            "first_session": "",
+            "last_session": "",
+        }
+    ordered = sorted(charges, key=lambda c: int(c["started_at"]))
+    kwh = sum(float(c.get("energy_added") or 0) for c in ordered)
+    return {
+        "place": place,
+        "sessions": len(ordered),
+        "total_kwh": round(kwh, 1),
+        "first_session": fmt_local(ordered[0]["started_at"]),
+        "last_session": fmt_local(ordered[-1]["started_at"]),
+    }
+
+
+def build_other_location_rows(all_charges: list[dict]) -> list[dict]:
+    """All known Tessie history — Łódź, Brajniki, Superchargers (kWh only)."""
+    lodz = [c for c in all_charges if is_lodz_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
+    braj = [c for c in all_charges if is_brajniki_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
+    sc = [c for c in all_charges if is_supercharger_charge(c) and float(c.get("energy_added") or 0) >= 0.1]
+    return [
+        summarize_location_group(lodz, "Łódź"),
+        summarize_location_group(braj, "Brajniki"),
+        summarize_location_group(sc, "Superchargers"),
+    ]
 
 
 def ts_local(epoch: int | float) -> datetime:
@@ -488,12 +559,18 @@ def monthly_to_simple(monthly_rows: list[dict]) -> list[dict]:
     return simple
 
 
-def push_sheet(session_rows: list[dict], monthly_rows: list[dict], sheet_id: str) -> str:
+def push_sheet(
+    session_rows: list[dict],
+    monthly_rows: list[dict],
+    other_loc_rows: list[dict],
+    sheet_id: str,
+) -> str:
     """
     Sheet tabs:
-      monthly_total  — month / grand / EV / homelab
-      charging_log   — each session: start, end, duration, kWh, full price
-      monthly_detail — full breakdown (optional)
+      monthly_total     — month / grand / EV / homelab
+      charging_log      — each home session: start, end, duration, kWh, full price
+      monthly_detail    — full breakdown (optional)
+      other_locations   — Łódź / Brajniki / Superchargers kWh (all history)
     """
     simple_rows = monthly_to_simple(monthly_rows)
     payload = {
@@ -503,6 +580,8 @@ def push_sheet(session_rows: list[dict], monthly_rows: list[dict], sheet_id: str
         "monthly_fields": MONTHLY_FIELDS,
         "simple_rows": simple_rows,
         "simple_fields": MONTHLY_TOTAL_FIELDS,
+        "other_loc_rows": other_loc_rows,
+        "other_loc_fields": OTHER_LOC_FIELDS,
         "sheet_id": sheet_id,
         "creds": str(SA_CREDS),
         "updated": datetime.now(WARSAW).isoformat(timespec="seconds"),
@@ -540,21 +619,20 @@ def upsert(title, fields, rows, min_rows=100):
 upsert("monthly_total", p["simple_fields"], p["simple_rows"], 50)
 upsert("charging_log", p["session_fields"], p["session_rows"], 2000)
 upsert("monthly_detail", p["monthly_fields"], p["monthly_rows"], 50)
+upsert("other_locations", p["other_loc_fields"], p["other_loc_rows"], 20)
 
 # Remove obsolete tab names if present
-for obsolete in ("totals", "monthly", "Arkusz1"):
+for obsolete in ("totals", "monthly"):
     try:
         if obsolete in [w.title for w in sh.worksheets()] and len(sh.worksheets()) > 1:
-            # never delete last sheet; skip Arkusz1 rename by clearing only if empty name conflict
-            if obsolete in ("totals", "monthly"):
-                sh.del_worksheet(sh.worksheet(obsolete))
+            sh.del_worksheet(sh.worksheet(obsolete))
     except Exception:
         pass
 
-# Order: monthly_total, charging_log, monthly_detail (best-effort)
+# Order (best-effort)
 try:
     order = []
-    for name in ("monthly_total", "charging_log", "monthly_detail"):
+    for name in ("monthly_total", "charging_log", "monthly_detail", "other_locations"):
         try:
             order.append(sh.worksheet(name))
         except Exception:
@@ -610,6 +688,16 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     monthly = build_monthly_rows(rows)
     write_csv(monthly, args.monthly_out, MONTHLY_FIELDS)
 
+    # All-history location buckets (no March cutoff)
+    other_loc = build_other_location_rows(all_c)
+    print("Other locations (all history):", file=sys.stderr)
+    for r in other_loc:
+        print(
+            f"  {r['place']}: {r['sessions']} sessions, {r['total_kwh']} kWh "
+            f"({r['first_session']} → {r['last_session']})",
+            file=sys.stderr,
+        )
+
     kwh = sum(float(r["kwh_added"]) for r in rows)
     cost = sum(float(r["full_cost_pln"]) for r in rows if r["full_cost_pln"] != "")
     print(f"sessions={len(rows)}  EV_kWh={kwh:.1f}  EV_full_variable_PLN={cost:.2f}")
@@ -619,7 +707,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
         print(f"range={rows[0]['start_local']} → {rows[-1]['start_local']}")
 
     if args.sheet:
-        url = push_sheet(rows, monthly, args.sheet_id)
+        url = push_sheet(rows, monthly, other_loc, args.sheet_id)
         print(f"sheet={url}")
     return 0
 
