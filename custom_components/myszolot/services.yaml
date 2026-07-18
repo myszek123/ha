@@ -1,0 +1,99 @@
+set_weekly_drive:
+  name: Set weekly drive summary
+  description: >
+    Update last complete Mon–Sun drive stats (pushed by charge-log on services).
+    Sensors under Myszolot refresh from this payload.
+  fields:
+    week_start:
+      required: true
+      example: "2026-07-06"
+      selector:
+        text:
+    week_end:
+      required: true
+      example: "2026-07-12"
+      selector:
+        text:
+    drives:
+      required: false
+      example: 59
+      selector:
+        number:
+          min: 0
+          mode: box
+    hours:
+      required: false
+      example: 7.05
+      selector:
+        number:
+          min: 0
+          step: 0.01
+          mode: box
+    distance_km:
+      required: false
+      example: 174.5
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          mode: box
+    energy_kwh:
+      required: false
+      example: 33.9
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          mode: box
+    max_speed_kmh:
+      required: false
+      example: 119
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          mode: box
+    max_speed_when:
+      required: false
+      selector:
+        text:
+    max_speed_driver:
+      required: false
+      example: "unknown"
+      selector:
+        text:
+    max_speed_from:
+      required: false
+      selector:
+        text:
+    max_speed_to:
+      required: false
+      selector:
+        text:
+    all_time_max_speed_kmh:
+      required: false
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          mode: box
+    all_time_max_when:
+      required: false
+      selector:
+        text:
+    all_time_max_driver:
+      required: false
+      selector:
+        text:
+    all_time_max_from:
+      required: false
+      selector:
+        text:
+    all_time_max_to:
+      required: false
+      selector:
+        text:
+    updated_at:
+      required: false
+      selector:
+        text:

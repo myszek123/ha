@@ -161,6 +161,85 @@ cards:
             entity_id: select.myszolot_charge_mode
             option: smart
 
+  # ── Last complete drive week (Mon–Sun, from charge-log) ───────────────────
+  - type: markdown
+    content: >
+      {% set w = 'sensor.myszolot_weekly_drive' %}
+
+      {% set start = state_attr(w, 'week_start') %}
+
+      {% set end = state_attr(w, 'week_end') %}
+
+      {% set hours = state_attr(w, 'hours') %}
+
+      {% set dist = state_attr(w, 'distance_km') %}
+
+      {% set energy = state_attr(w, 'energy_kwh') %}
+
+      {% set drives = state_attr(w, 'drives') %}
+
+      {% set vmax = state_attr(w, 'max_speed_kmh') %}
+
+      {% set when = state_attr(w, 'max_speed_when') %}
+
+      {% set driver = state_attr(w, 'max_speed_driver') %}
+
+      {% set route = state_attr(w, 'max_speed_route') %}
+
+      {% set at_max = state_attr(w, 'all_time_max_speed_kmh') %}
+
+      ### Last week drives
+
+      {% if start %}
+
+      **{{ start }} → {{ end }}**
+
+
+      - **{{ dist }} km** · **{{ hours }} h** · **{{ energy }} kWh** · {{ drives }} trips
+
+      - Max **{{ vmax }} km/h** {% if when %}({{ when }}){% endif %}
+
+        {% if driver %}· driver *{{ driver }}*{% endif %}
+
+      {% if route %}
+
+      - Route: {{ route }}
+
+      {% endif %}
+
+      {% if at_max %}
+
+      - All-time max: **{{ at_max }} km/h**
+
+      {% endif %}
+
+      {% else %}
+
+      _No weekly stats yet — charge-log pushes after daily/Monday run._
+
+      {% endif %}
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_distance
+        name: Week km
+        icon: mdi:map-marker-distance
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_hours
+        name: Week hours
+        icon: mdi:clock-outline
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_energy
+        name: Week energy
+        icon: mdi:lightning-bolt
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_max_speed
+        name: Week max speed
+        icon: mdi:speedometer
+
   # ── Overrides / Tesla ─────────────────────────────────────────────────────
   - type: entities
     title: Overrides / Tesla

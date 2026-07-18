@@ -1,5 +1,10 @@
 DOMAIN = "myszolot"
 
+# Weekly drive summary (pushed from charge-log → service myszolot.set_weekly_drive)
+STORAGE_WEEKLY_DRIVE = "myszolot.weekly_drive"
+SIGNAL_WEEKLY_DRIVE_UPDATED = "myszolot_weekly_drive_updated"
+
+
 # External HA entities (read)
 SENSOR_PRICE = "sensor.pstryk_current_buy_price"
 SENSOR_SOC = "sensor.myszolot_battery_level"

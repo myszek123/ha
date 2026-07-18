@@ -1,11 +1,12 @@
 {
   "domain": "myszolot",
   "name": "Myszolot Charging",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "config_flow": true,
-  "documentation": "https://github.com/your-repo/ha_myszolot",
+  "documentation": "https://github.com/myszek123/ha",
   "requirements": [],
   "dependencies": [],
   "codeowners": [],
   "iot_class": "local_polling"
 }
+

@@ -758,6 +758,70 @@ def send_email(subject: str, body: str, to: str | None = None) -> None:
     print(f"Email sent to {to_addr}", file=sys.stderr)
 
 
+def ha_weekly_payload(week: dict, all_time: dict | None = None) -> dict:
+    """Body for myszolot.set_weekly_drive service."""
+    payload = {
+        "week_start": week.get("week_start"),
+        "week_end": week.get("week_end"),
+        "drives": week.get("drives"),
+        "hours": week.get("hours"),
+        "distance_km": week.get("distance_km"),
+        "energy_kwh": week.get("energy_kwh"),
+        "max_speed_kmh": week.get("max_speed_kmh"),
+        "max_speed_when": week.get("max_speed_when"),
+        "max_speed_driver": week.get("max_speed_driver") or "unknown",
+        "max_speed_from": week.get("max_speed_from"),
+        "max_speed_to": week.get("max_speed_to"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if all_time:
+        payload.update(
+            {
+                "all_time_max_speed_kmh": all_time.get("max_speed_kmh"),
+                "all_time_max_when": all_time.get("start_local"),
+                "all_time_max_driver": all_time.get("driver") or "unknown",
+                "all_time_max_from": all_time.get("from"),
+                "all_time_max_to": all_time.get("to"),
+            }
+        )
+    return {k: v for k, v in payload.items() if v is not None and v != ""}
+
+
+def push_weekly_to_ha(week: dict, all_time: dict | None = None) -> bool:
+    """
+    Push last-week stats into Home Assistant via service myszolot.set_weekly_drive.
+    Requires HA_TOKEN (+ optional HA_URL). Non-fatal if HA is down / service missing.
+    """
+    token = os.environ.get("HA_TOKEN", "").strip()
+    if not token:
+        print("HA push skipped (no HA_TOKEN)", file=sys.stderr)
+        return False
+    base = os.environ.get("HA_URL", "http://192.168.1.201:8123").rstrip("/")
+    payload = ha_weekly_payload(week, all_time)
+    url = f"{base}/api/services/myszolot/set_weekly_drive"
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        print(
+            f"HA weekly drive pushed ({payload.get('week_start')} → {payload.get('week_end')})",
+            file=sys.stderr,
+        )
+        return True
+    except Exception as e:
+        print(f"HA weekly push failed: {e}", file=sys.stderr)
+        return False
+
+
 def write_csv(rows: list[dict], path: Path, fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -962,6 +1026,26 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
             weekly_drive_rows=weekly_rows,
         )
         print(f"sheet={url}")
+
+    # Always refresh HA last-complete-week sensors (if HA_TOKEN set)
+    last_start, last_end = last_complete_week()
+    last_week = next(
+        (w for w in weekly_rows if w["week_start"] == last_start.isoformat()),
+        {
+            "week_start": last_start.isoformat(),
+            "week_end": last_end.isoformat(),
+            "drives": 0,
+            "hours": 0.0,
+            "distance_km": 0.0,
+            "energy_kwh": 0.0,
+            "max_speed_kmh": 0,
+            "max_speed_when": "",
+            "max_speed_driver": "unknown",
+            "max_speed_from": "",
+            "max_speed_to": "",
+        },
+    )
+    push_weekly_to_ha(last_week, top)
     return 0
 
 
@@ -1014,6 +1098,10 @@ def cmd_weekly_email(args: argparse.Namespace) -> int:
     )
     subject, body = format_weekly_email(week, all_time, sheet_url)
     print(body)
+
+    # Keep HA entities in sync even if email is skipped / dry-run
+    push_weekly_to_ha(week, all_time)
+
     if args.dry_run:
         print("(dry-run — no email)", file=sys.stderr)
         return 0

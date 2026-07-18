@@ -2,16 +2,23 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, MODE_OVERRIDE
+from .const import DOMAIN, MODE_OVERRIDE, SIGNAL_WEEKLY_DRIVE_UPDATED
 from .coordinator import MyszolotCoordinator
+from .weekly_drive import weekly_drive_data
 
 
 async def async_setup_entry(
@@ -30,6 +37,12 @@ async def async_setup_entry(
             MyszolotOverrideRemainingMinutesSensor(coordinator),
             MyszolotOverrideRemainingSensor(coordinator),
             MyszolotMaxReachableSocSensor(coordinator),
+            # Last complete Mon–Sun week (pushed by charge-log)
+            MyszolotWeeklyDriveSummarySensor(hass),
+            MyszolotWeeklyDriveDistanceSensor(hass),
+            MyszolotWeeklyDriveHoursSensor(hass),
+            MyszolotWeeklyDriveEnergySensor(hass),
+            MyszolotWeeklyDriveMaxSpeedSensor(hass),
         ]
     )
 
@@ -261,3 +274,152 @@ class MyszolotOverrideRemainingSensor(_MyszolotBaseSensor):
         if hours:
             return f"{hours}h {rem}m"
         return f"{rem}m"
+
+
+class _WeeklyDriveSensorBase(SensorEntity):
+    """Sensors backed by weekly_drive store (not charging coordinator)."""
+
+    _attr_should_poll = False
+
+    def __init__(self, hass: HomeAssistant, unique_id: str, name: str) -> None:
+        self.hass = hass
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._attr_has_entity_name = False
+
+    @property
+    def _w(self) -> dict[str, Any]:
+        return weekly_drive_data(self.hass)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_WEEKLY_DRIVE_UPDATED, self._handle_update
+            )
+        )
+
+    @callback
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class MyszolotWeeklyDriveSummarySensor(_WeeklyDriveSensorBase):
+    """sensor.myszolot_weekly_drive — last complete week label + full attributes."""
+
+    _attr_icon = "mdi:road-variant"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(hass, "myszolot_weekly_drive", "Myszolot Weekly Drive")
+
+    @property
+    def native_value(self) -> str:
+        w = self._w
+        if not w.get("week_start"):
+            return "unknown"
+        dist = w.get("distance_km")
+        if dist is not None and dist != "":
+            return f"{dist} km"
+        return f"{w.get('week_start')} → {w.get('week_end')}"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        w = self._w
+        route = ""
+        if w.get("max_speed_from") or w.get("max_speed_to"):
+            route = f"{w.get('max_speed_from', '')} → {w.get('max_speed_to', '')}"
+        at_route = ""
+        if w.get("all_time_max_from") or w.get("all_time_max_to"):
+            at_route = f"{w.get('all_time_max_from', '')} → {w.get('all_time_max_to', '')}"
+        return {
+            "week_start": w.get("week_start"),
+            "week_end": w.get("week_end"),
+            "drives": w.get("drives"),
+            "hours": w.get("hours"),
+            "distance_km": w.get("distance_km"),
+            "energy_kwh": w.get("energy_kwh"),
+            "max_speed_kmh": w.get("max_speed_kmh"),
+            "max_speed_when": w.get("max_speed_when"),
+            "max_speed_driver": w.get("max_speed_driver"),
+            "max_speed_route": route or None,
+            "max_speed_from": w.get("max_speed_from"),
+            "max_speed_to": w.get("max_speed_to"),
+            "all_time_max_speed_kmh": w.get("all_time_max_speed_kmh"),
+            "all_time_max_when": w.get("all_time_max_when"),
+            "all_time_max_driver": w.get("all_time_max_driver"),
+            "all_time_max_route": at_route or None,
+            "updated_at": w.get("updated_at"),
+        }
+
+
+class MyszolotWeeklyDriveDistanceSensor(_WeeklyDriveSensorBase):
+    _attr_icon = "mdi:map-marker-distance"
+    _attr_native_unit_of_measurement = "km"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(
+            hass, "myszolot_weekly_drive_distance", "Myszolot Weekly Drive Distance"
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._w.get("distance_km")
+        return float(v) if v is not None and v != "" else None
+
+
+class MyszolotWeeklyDriveHoursSensor(_WeeklyDriveSensorBase):
+    _attr_icon = "mdi:clock-outline"
+    _attr_native_unit_of_measurement = "h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(
+            hass, "myszolot_weekly_drive_hours", "Myszolot Weekly Drive Hours"
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._w.get("hours")
+        return float(v) if v is not None and v != "" else None
+
+
+class MyszolotWeeklyDriveEnergySensor(_WeeklyDriveSensorBase):
+    _attr_icon = "mdi:lightning-bolt"
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(
+            hass, "myszolot_weekly_drive_energy", "Myszolot Weekly Drive Energy"
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._w.get("energy_kwh")
+        return float(v) if v is not None and v != "" else None
+
+
+class MyszolotWeeklyDriveMaxSpeedSensor(_WeeklyDriveSensorBase):
+    _attr_icon = "mdi:speedometer"
+    _attr_native_unit_of_measurement = "km/h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(
+            hass, "myszolot_weekly_drive_max_speed", "Myszolot Weekly Drive Max Speed"
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._w.get("max_speed_kmh")
+        return float(v) if v is not None and v != "" else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        w = self._w
+        return {
+            "when": w.get("max_speed_when"),
+            "driver": w.get("max_speed_driver"),
+            "from": w.get("max_speed_from"),
+            "to": w.get("max_speed_to"),
+        }
