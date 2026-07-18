@@ -77,6 +77,7 @@ DRIVE_FIELDS = [
     "energy_kwh",
     "max_speed_kmh",
     "avg_speed_kmh",
+    "driver",
     "from",
     "to",
     "soc_start",
@@ -94,6 +95,7 @@ WEEKLY_DRIVE_FIELDS = [
     "energy_kwh",
     "max_speed_kmh",
     "max_speed_when",
+    "max_speed_driver",
     "max_speed_from",
     "max_speed_to",
 ]
@@ -570,6 +572,43 @@ def short_place(loc: str | None, saved: str | None = None) -> str:
     return str(loc).split(",")[0].strip()
 
 
+def extract_driver(d: dict) -> str:
+    """
+    Best-effort driver label from a Tessie drive object.
+
+    Tessie documents a driver_profile filter, but as of 2026-07 the drives
+    payload for this vehicle does not include who was driving (and the filter
+    returns all drives). We still read any future/optional fields + manual tag.
+    """
+    for key in (
+        "driver_profile",
+        "driver_name",
+        "driver",
+        "profile",
+        "profile_name",
+    ):
+        v = d.get(key)
+        if v is None or v == "":
+            continue
+        if isinstance(v, dict):
+            name = (
+                v.get("name")
+                or v.get("driver_profile")
+                or " ".join(
+                    str(v.get(k) or "")
+                    for k in ("first_name", "last_name", "driver_first_name", "driver_last_name")
+                ).strip()
+            )
+            if name:
+                return str(name).strip()
+            continue
+        return str(v).strip()
+    tag = d.get("tag")
+    if tag:
+        return f"tag:{tag}"
+    return ""
+
+
 def drive_to_row(d: dict) -> dict:
     start = int(d["started_at"])
     end = int(d.get("ended_at") or start)
@@ -581,6 +620,7 @@ def drive_to_row(d: dict) -> dict:
         "energy_kwh": round(float(d.get("energy_used") or 0), 2),
         "max_speed_kmh": round(float(d.get("max_speed") or 0), 1),
         "avg_speed_kmh": round(float(d.get("average_speed") or 0), 1),
+        "driver": extract_driver(d),
         "from": short_place(d.get("starting_location"), d.get("starting_saved_location")),
         "to": short_place(d.get("ending_location"), d.get("ending_saved_location")),
         "soc_start": d.get("starting_battery", ""),
@@ -641,6 +681,7 @@ def build_weekly_drive_rows(drive_rows: list[dict]) -> list[dict]:
                 "energy_kwh": round(energy, 1),
                 "max_speed_kmh": best.get("max_speed_kmh", ""),
                 "max_speed_when": best.get("start_local", ""),
+                "max_speed_driver": best.get("driver") or "unknown",
                 "max_speed_from": best.get("from", ""),
                 "max_speed_to": best.get("to", ""),
             }
@@ -673,6 +714,7 @@ def format_weekly_email(
         f"Energy used:  {week['energy_kwh']} kWh",
         f"Max speed:    {week['max_speed_kmh']} km/h",
         f"  when:       {week['max_speed_when']}",
+        f"  driver:     {week.get('max_speed_driver') or 'unknown'}",
         f"  route:      {week['max_speed_from']} → {week['max_speed_to']}",
     ]
     if all_time_max:
@@ -680,8 +722,12 @@ def format_weekly_email(
             "",
             "All-time max speed (Tessie history):",
             f"  {all_time_max.get('max_speed_kmh')} km/h on {all_time_max.get('start_local')}",
+            f"  driver: {all_time_max.get('driver') or 'unknown'}",
             f"  {all_time_max.get('from')} → {all_time_max.get('to')}",
             f"  distance {all_time_max.get('distance_km')} km, energy {all_time_max.get('energy_kwh')} kWh",
+            "",
+            "Note: Tessie usually does not report which car profile drove a trip;",
+            "driver stays 'unknown' unless the API/tag provides it.",
         ]
     if sheet_url:
         lines += ["", f"Sheet: {sheet_url}"]
@@ -955,6 +1001,7 @@ def cmd_weekly_email(args: argparse.Namespace) -> int:
             "energy_kwh": 0.0,
             "max_speed_kmh": 0,
             "max_speed_when": "",
+            "max_speed_driver": "unknown",
             "max_speed_from": "",
             "max_speed_to": "",
         }
