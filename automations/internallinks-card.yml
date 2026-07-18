@@ -1,217 +1,308 @@
-type: vertical-stack
-cards:
-- type: markdown
-  content: '### Myszolot — charging & weekly drives'
-- type: vertical-stack
+# Paste/merge into Lovelace view InternalLinks (sections mode).
+type: sections
+title: InternalLinks
+path: tab
+sections:
+- type: grid
+  column_span: 2
   cards:
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-    - type: tile
-      entity: sensor.myszolot_charge_reason
-      name: Decision
-      icon: mdi:head-cog-outline
-    - type: tile
-      entity: select.myszolot_charge_mode
-      name: Mode
-      icon: mdi:ev-station
-    - type: tile
-      entity: sensor.myszolot_battery_level
-      name: Battery
-      icon: mdi:car-electric
-    - type: tile
-      entity: binary_sensor.myszolot_charge_cable
-      name: Cable
-      icon: mdi:ev-plug-type2
+  - type: heading
+    heading: Quick Access Links
+    heading_style: title
   - type: markdown
-    content: '{% set mode = states(''select.myszolot_charge_mode'') %}
+    title: Quick Access Links
+    content: '## Home Assistant Access
 
-      {% set reason = states(''sensor.myszolot_charge_reason'') %}
+      - [HA @ Tailscale](http://100.78.202.56:8123) 🌐 via Tailscale (100.78.202.56:8123)
 
-      {% set soc = states(''sensor.myszolot_battery_level'') %}
-
-      {% set end_soc = states(''sensor.myszolot_expected_end_soc'') %}
-
-      {% set max_soc = states(''sensor.myszolot_max_reachable_soc'') %}
-
-      {% set cost = states(''sensor.myszolot_charge_schedule'') | float(0) %}
-
-      {% set mins = states(''sensor.myszolot_planned_session_duration'') | int(0)
-      %}
-
-      {% set amps = state_attr(''sensor.myszolot_charge_reason'', ''charge_amps'')
-      %}
-
-      {% set kwh = state_attr(''sensor.myszolot_charge_schedule'', ''planned_kwh'')
-      | float(0) %}
-
-      {% set start = state_attr(''sensor.myszolot_charge_schedule'', ''planned_session_start'')
-      %}
-
-      {% set end = state_attr(''sensor.myszolot_charge_schedule'', ''planned_session_end'')
-      %}
-
-      {% set target = state_attr(''sensor.myszolot_charge_reason'', ''target_soc'')
-      %}
-
-      {% set feasible = state_attr(''sensor.myszolot_charge_reason'', ''feasible'')
-      %}
-
-      {% set shortfall = state_attr(''sensor.myszolot_charge_reason'', ''shortfall_soc'')
-      %}
-
-      {% set rem = states(''sensor.myszolot_override_remaining'') %}
-
-      {% set hours = (mins // 60) %}
-
-      {% set remm = (mins % 60) %}
-
-      ### Plan
-
-      **{{ mode }}** · `{{ reason }}` · target **{{ target }}%**
+      - [HA @ Local](https://ha.myszki.net.pl/) 🏠 Local network
 
 
-      {% if mode == ''override'' %}
+      ## Services
 
-      Override window remaining: **{{ rem }}**
+      - [Immich](https://immich.myszki.net.pl/) 📸 Photos
 
-      {% endif %}
-
-
-      {% if feasible is defined and feasible == false %}
-
-      ⚠️ **Target may be unreachable** at {{ amps }}A — max ~**{{ max_soc }}%** (shortfall
-      ~{{ shortfall }}%)
-
-      {% endif %}
+      - [Synology](https://synology.lan:51281/) 💾 Backup / NAS
 
 
-      {% if mins > 0 and start %}
+      ## Assistant
 
-      {% set secs = as_timestamp(start) - as_timestamp(now()) %}
+      - [Assistant (OpenClaw)](https://assistant.myszki.net.pl/) 🤖 Personal AI assistant
+      dashboard
 
-      {% if secs > 0 %}
 
-      {% set rel_h = (secs // 3600) | int %}
+      ## Proxmox + PBS
 
-      {% set rel_m = ((secs % 3600) // 60) | int %}
+      - [Proxmox](https://proxmox.myszki.net.pl/) 🖥️ Virtualization server
 
-      {% if rel_h > 0 %}
+      - [PBS](https://pbs.myszki.net.pl/#pbsDashboard) 🗄️ Backup server
 
-      {% set rel = ''in '' ~ rel_h ~ ''h'' ~ (rel_m ~ ''m'' if rel_m else '''') %}
 
-      {% else %}
+      ## Zigbee
 
-      {% set rel = ''in '' ~ rel_m ~ '' min'' %}
+      - [Z2M Home](https://z2m.myszki.net.pl/) 🏠 Zigbee2MQTT main
 
-      {% endif %}
+      - [Z2M Garage](https://z2m-garage.myszki.net.pl/) 🚗 Zigbee2MQTT garage
 
-      {% elif as_timestamp(now()) < as_timestamp(end) %}
+      - [Zigbee LAN Hub (SLZB-06P7)](http://zigbee-hub.lan/) 🔌
 
-      {% set rel = ''active now'' %}
 
-      {% else %}
+      ## Network
 
-      {% set rel = ''ended'' %}
+      - [OPNsense](https://opnsense.myszki.net.pl/) 🧭 DHCP + DNS (.lan) — router phase
+      2 soon
 
-      {% endif %}
+      - [Router](http://funbox.lan) 🛜 FunBox3 (gateway)
 
-      - **Window:** {{ as_timestamp(start) | timestamp_custom(''%H:%M'', true) }}–{{
-      as_timestamp(end) | timestamp_custom(''%H:%M'', true) }} *({{ rel }})*
+      - [Garage AP](http://eap225.lan/) 📡 EAP225
 
-      - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ remm }}min · **{{ amps
-      }}A** (~{{ ''%.2f''|format(kwh) }} kWh)
+      - [Home AP](http://homeap.lan/) 📡 EAP610
 
-      - **SoC:** {{ soc }}% → **~{{ end_soc }}%** (max ~{{ max_soc }}%)
+      - [Omada SDN](https://omada.myszki.net.pl/) 🖧 Controller
 
-      - **Planned cost:** ~**{{ ''%.2f''|format(cost) }} PLN**
+      - [Switch@HomeAP](http://switch.lan/) 🔀 TP108E
 
-      {% else %}
+      - [AdGuard](https://adguard.myszki.net.pl/) 🛡️ DNS with Ad blocking
 
-      _No session planned right now._
 
-      {% endif %}
+      ## Monitoring & Backup
 
-      '
-  - type: markdown
-    content: '**Override** — set target % and window, then activate. Cheapest hours
-      (no price hard-stop); auto-returns to smart when done.
+      - [Netdata](https://monitor.myszki.net.pl/) 📊 All machines, one dashboard
 
-      '
-  - type: entities
-    entities:
-    - entity: input_number.myszolot_custom_target_soc
-      name: Target SoC %
-    - entity: input_number.myszolot_deadline_hours
-      name: Within hours
-  - type: horizontal-stack
+      - [Frigate](https://frigate.myszki.net.pl/) 📹 NVR / object detection
+
+      - [Reolink](https://reolink.lan/) 🎥 Camera management
+
+
+      **Tip:**
+
+      Primary links use **https://name.myszki.net.pl** (real Let’s Encrypt certs,
+      no warnings, all devices). Every box also resolves as **name.lan** (works on
+      LAN — AdGuard delegates the zone to OPNsense). Tailscale links 🌐 work from anywhere.
+      The old .local names are retired.
+
+
+      some links
+
+      https://calculator.ipconfigure.com/'
+- type: grid
+  column_span: 2
+  cards:
+  - type: heading
+    heading: Myszolot — charging & weekly drives
+    heading_style: title
+  - type: vertical-stack
     cards:
-    - type: button
-      name: Start override
-      icon: mdi:target
-      show_state: false
-      icon_height: 28px
-      tap_action:
-        action: call-service
-        service: select.select_option
-        service_data:
-          entity_id: select.myszolot_charge_mode
-          option: override
-    - type: button
-      name: Smart (80%)
-      icon: mdi:brain
-      show_state: false
-      icon_height: 28px
-      tap_action:
-        action: call-service
-        service: select.select_option
-        service_data:
-          entity_id: select.myszolot_charge_mode
-          option: smart
-  - type: markdown
-    content: "{% set w = 'sensor.myszolot_weekly_drive' %}\n{% set start = state_attr(w,\
-      \ 'week_start') %}\n{% set end = state_attr(w, 'week_end') %}\n{% set hours\
-      \ = state_attr(w, 'hours') %}\n{% set dist = state_attr(w, 'distance_km') %}\n\
-      {% set energy = state_attr(w, 'energy_kwh') %}\n{% set drives = state_attr(w,\
-      \ 'drives') %}\n{% set vmax = state_attr(w, 'max_speed_kmh') %}\n{% set when\
-      \ = state_attr(w, 'max_speed_when') %}\n{% set driver = state_attr(w, 'max_speed_driver')\
-      \ %}\n{% set route = state_attr(w, 'max_speed_route') %}\n{% set at_max = state_attr(w,\
-      \ 'all_time_max_speed_kmh') %}\n### Last week drives\n{% if start %}\n**{{ start\
-      \ }} → {{ end }}**\n\n- **{{ dist }} km** · **{{ hours }} h** · **{{ energy\
-      \ }} kWh** · {{ drives }} trips\n- Max **{{ vmax }} km/h** {% if when %}({{\
-      \ when }}){% endif %}\n\n  {% if driver %}· driver *{{ driver }}*{% endif %}\n\
-      \n{% if route %}\n- Route: {{ route }}\n{% endif %}\n{% if at_max %}\n- All-time\
-      \ max: **{{ at_max }} km/h**\n{% endif %}\n{% else %}\n_No weekly stats yet\
-      \ — charge-log pushes after daily/Monday run._\n{% endif %}\n"
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-    - type: tile
-      entity: sensor.myszolot_weekly_drive_distance
-      name: Week km
-      icon: mdi:map-marker-distance
-    - type: tile
-      entity: sensor.myszolot_weekly_drive_hours
-      name: Week hours
-      icon: mdi:clock-outline
-    - type: tile
-      entity: sensor.myszolot_weekly_drive_energy
-      name: Week energy
-      icon: mdi:lightning-bolt
-    - type: tile
-      entity: sensor.myszolot_weekly_drive_max_speed
-      name: Week max speed
-      icon: mdi:speedometer
-  - type: entities
-    title: Overrides / Tesla
-    entities:
-    - entity: input_boolean.myszolot_location_override
-      name: Force home (GPS fix)
-    - entity: number.myszolot_charge_current
-      name: Charge current (A)
-    - entity: number.myszolot_charge_limit
-      name: Charge limit %
-    - entity: switch.myszolot_charge
-      name: Charge switch
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+      - type: tile
+        entity: sensor.myszolot_charge_reason
+        name: Decision
+        icon: mdi:head-cog-outline
+      - type: tile
+        entity: select.myszolot_charge_mode
+        name: Mode
+        icon: mdi:ev-station
+      - type: tile
+        entity: sensor.myszolot_battery_level
+        name: Battery
+        icon: mdi:car-electric
+      - type: tile
+        entity: binary_sensor.myszolot_charge_cable
+        name: Cable
+        icon: mdi:ev-plug-type2
+    - type: markdown
+      content: '{% set mode = states(''select.myszolot_charge_mode'') %}
+
+        {% set reason = states(''sensor.myszolot_charge_reason'') %}
+
+        {% set soc = states(''sensor.myszolot_battery_level'') %}
+
+        {% set end_soc = states(''sensor.myszolot_expected_end_soc'') %}
+
+        {% set max_soc = states(''sensor.myszolot_max_reachable_soc'') %}
+
+        {% set cost = states(''sensor.myszolot_charge_schedule'') | float(0) %}
+
+        {% set mins = states(''sensor.myszolot_planned_session_duration'') | int(0)
+        %}
+
+        {% set amps = state_attr(''sensor.myszolot_charge_reason'', ''charge_amps'')
+        %}
+
+        {% set kwh = state_attr(''sensor.myszolot_charge_schedule'', ''planned_kwh'')
+        | float(0) %}
+
+        {% set start = state_attr(''sensor.myszolot_charge_schedule'', ''planned_session_start'')
+        %}
+
+        {% set end = state_attr(''sensor.myszolot_charge_schedule'', ''planned_session_end'')
+        %}
+
+        {% set target = state_attr(''sensor.myszolot_charge_reason'', ''target_soc'')
+        %}
+
+        {% set feasible = state_attr(''sensor.myszolot_charge_reason'', ''feasible'')
+        %}
+
+        {% set shortfall = state_attr(''sensor.myszolot_charge_reason'', ''shortfall_soc'')
+        %}
+
+        {% set rem = states(''sensor.myszolot_override_remaining'') %}
+
+        {% set hours = (mins // 60) %}
+
+        {% set remm = (mins % 60) %}
+
+        ### Plan
+
+        **{{ mode }}** · `{{ reason }}` · target **{{ target }}%**
+
+
+        {% if mode == ''override'' %}
+
+        Override window remaining: **{{ rem }}**
+
+        {% endif %}
+
+
+        {% if feasible is defined and feasible == false %}
+
+        ⚠️ **Target may be unreachable** at {{ amps }}A — max ~**{{ max_soc }}%**
+        (shortfall ~{{ shortfall }}%)
+
+        {% endif %}
+
+
+        {% if mins > 0 and start %}
+
+        {% set secs = as_timestamp(start) - as_timestamp(now()) %}
+
+        {% if secs > 0 %}
+
+        {% set rel_h = (secs // 3600) | int %}
+
+        {% set rel_m = ((secs % 3600) // 60) | int %}
+
+        {% if rel_h > 0 %}
+
+        {% set rel = ''in '' ~ rel_h ~ ''h'' ~ (rel_m ~ ''m'' if rel_m else '''')
+        %}
+
+        {% else %}
+
+        {% set rel = ''in '' ~ rel_m ~ '' min'' %}
+
+        {% endif %}
+
+        {% elif as_timestamp(now()) < as_timestamp(end) %}
+
+        {% set rel = ''active now'' %}
+
+        {% else %}
+
+        {% set rel = ''ended'' %}
+
+        {% endif %}
+
+        - **Window:** {{ as_timestamp(start) | timestamp_custom(''%H:%M'', true) }}–{{
+        as_timestamp(end) | timestamp_custom(''%H:%M'', true) }} *({{ rel }})*
+
+        - **Length:** {% if hours %}{{ hours }}h {% endif %}{{ remm }}min · **{{ amps
+        }}A** (~{{ ''%.2f''|format(kwh) }} kWh)
+
+        - **SoC:** {{ soc }}% → **~{{ end_soc }}%** (max ~{{ max_soc }}%)
+
+        - **Planned cost:** ~**{{ ''%.2f''|format(cost) }} PLN**
+
+        {% else %}
+
+        _No session planned right now._
+
+        {% endif %}
+
+        '
+    - type: markdown
+      content: '**Override** — set target % and window, then activate. Cheapest hours
+        (no price hard-stop); auto-returns to smart when done.
+
+        '
+    - type: entities
+      entities:
+      - entity: input_number.myszolot_custom_target_soc
+        name: Target SoC %
+      - entity: input_number.myszolot_deadline_hours
+        name: Within hours
+    - type: horizontal-stack
+      cards:
+      - type: button
+        name: Start override
+        icon: mdi:target
+        show_state: false
+        icon_height: 28px
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: override
+      - type: button
+        name: Smart (80%)
+        icon: mdi:brain
+        show_state: false
+        icon_height: 28px
+        tap_action:
+          action: call-service
+          service: select.select_option
+          service_data:
+            entity_id: select.myszolot_charge_mode
+            option: smart
+    - type: markdown
+      content: "{% set w = 'sensor.myszolot_weekly_drive' %}\n{% set start = state_attr(w,\
+        \ 'week_start') %}\n{% set end = state_attr(w, 'week_end') %}\n{% set hours\
+        \ = state_attr(w, 'hours') %}\n{% set dist = state_attr(w, 'distance_km')\
+        \ %}\n{% set energy = state_attr(w, 'energy_kwh') %}\n{% set drives = state_attr(w,\
+        \ 'drives') %}\n{% set vmax = state_attr(w, 'max_speed_kmh') %}\n{% set when\
+        \ = state_attr(w, 'max_speed_when') %}\n{% set driver = state_attr(w, 'max_speed_driver')\
+        \ %}\n{% set route = state_attr(w, 'max_speed_route') %}\n{% set at_max =\
+        \ state_attr(w, 'all_time_max_speed_kmh') %}\n### Last week drives\n{% if\
+        \ start %}\n**{{ start }} → {{ end }}**\n\n- **{{ dist }} km** · **{{ hours\
+        \ }} h** · **{{ energy }} kWh** · {{ drives }} trips\n- Max **{{ vmax }} km/h**\
+        \ {% if when %}({{ when }}){% endif %}\n\n  {% if driver %}· driver *{{ driver\
+        \ }}*{% endif %}\n\n{% if route %}\n- Route: {{ route }}\n{% endif %}\n{%\
+        \ if at_max %}\n- All-time max: **{{ at_max }} km/h**\n{% endif %}\n{% else\
+        \ %}\n_No weekly stats yet — charge-log pushes after daily/Monday run._\n\
+        {% endif %}\n"
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_distance
+        name: Week km
+        icon: mdi:map-marker-distance
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_hours
+        name: Week hours
+        icon: mdi:clock-outline
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_energy
+        name: Week energy
+        icon: mdi:lightning-bolt
+      - type: tile
+        entity: sensor.myszolot_weekly_drive_max_speed
+        name: Week max speed
+        icon: mdi:speedometer
+    - type: entities
+      title: Overrides / Tesla
+      entities:
+      - entity: input_boolean.myszolot_location_override
+        name: Force home (GPS fix)
+      - entity: number.myszolot_charge_current
+        name: Charge current (A)
+      - entity: number.myszolot_charge_limit
+        name: Charge limit %
+      - entity: switch.myszolot_charge
+        name: Charge switch
