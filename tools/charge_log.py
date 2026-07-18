@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Home EV charging log + monthly EV/homelab split → CSV + Google Sheet.
+Home EV charging log + Tessie drives + weekly drive summaries → Google Sheet.
 
 Runs with env vars only (no SSH, no baked-in secrets):
 
@@ -10,10 +10,13 @@ Runs with env vars only (no SSH, no baked-in secrets):
   SHEET_ID                     optional  (default: Home Charging Costs)
   VIN                          optional
   OUTPUT_DIR                   optional  (default: /data or $HOME)
+  SMTP_* / WEEKLY_EMAIL_TO     optional  (weekly drive email)
 
   python charge_log.py rebuild --sheet
+  python charge_log.py weekly-email          # last complete Mon–Sun week
+  python charge_log.py weekly-email --force  # email even if not Monday
 
-Daily on services LXC via Docker + host cron.
+Daily rebuild on services LXC; weekly email Monday 21:30.
 """
 from __future__ import annotations
 
@@ -21,13 +24,15 @@ import argparse
 import csv
 import json
 import os
+import smtplib
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from email.message import EmailMessage
 from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -63,6 +68,36 @@ MONTHLY_FIELDS = [
 MONTHLY_TOTAL_FIELDS = ["month", "grand_total", "ev_total", "homelab_total"]
 OTHER_LOC_FIELDS = ["place", "sessions", "total_kwh", "first_session", "last_session"]
 
+# All Tessie drives (distance/speed in metric: km, km/h)
+DRIVE_FIELDS = [
+    "start_local",
+    "end_local",
+    "duration_min",
+    "distance_km",
+    "energy_kwh",
+    "max_speed_kmh",
+    "avg_speed_kmh",
+    "from",
+    "to",
+    "soc_start",
+    "soc_end",
+    "odometer_start",
+    "tessie_id",
+]
+# One row per ISO week Mon–Sun (Europe/Warsaw)
+WEEKLY_DRIVE_FIELDS = [
+    "week_start",
+    "week_end",
+    "drives",
+    "hours",
+    "distance_km",
+    "energy_kwh",
+    "max_speed_kmh",
+    "max_speed_when",
+    "max_speed_from",
+    "max_speed_to",
+]
+
 
 def load_env_file() -> None:
     """Optional local helper: load ~/.env.private or /secrets/.env if present."""
@@ -82,7 +117,11 @@ def load_env_file() -> None:
             if "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            k = k.strip()
+            v = v.strip()
+            if "#" in v and not (v.startswith('"') or v.startswith("'")):
+                v = v.split("#", 1)[0].rstrip()
+            os.environ.setdefault(k, v.strip().strip('"').strip("'"))
 
 
 def require_env(name: str) -> str:
@@ -177,6 +216,57 @@ def fetch_all_tessie_charges(vin: str) -> list[dict]:
     url = f"https://api.tessie.com/{vin}/charges?limit=5000"
     data = http_json(url, {"Authorization": f"Bearer {token}", "Accept": "application/json"})
     return data.get("results") or []
+
+
+def fetch_all_tessie_drives(vin: str) -> list[dict]:
+    """
+    All drives in km / °C. Paginates with `to` if history exceeds one page.
+    max_speed / average_speed are km/h when distance_format=km.
+    """
+    token = require_env("TESSIE_TOKEN")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    out: list[dict] = []
+    seen: set[int] = set()
+    to_ts: int | None = None
+    page = 0
+    while True:
+        page += 1
+        qs = {
+            "distance_format": "km",
+            "temperature_format": "c",
+            "timezone": "Europe/Warsaw",
+            "format": "json",
+            "limit": 5000,
+        }
+        if to_ts is not None:
+            qs["to"] = to_ts
+        url = f"https://api.tessie.com/{vin}/drives?{urllib.parse.urlencode(qs)}"
+        data = http_json(url, headers)
+        batch = data.get("results") or []
+        if not batch:
+            break
+        new = 0
+        for d in batch:
+            did = int(d.get("id") or 0)
+            if did and did in seen:
+                continue
+            if did:
+                seen.add(did)
+            out.append(d)
+            new += 1
+        print(f"  drives page {page}: +{new} (total {len(out)})", file=sys.stderr)
+        if len(batch) < 5000:
+            break
+        oldest = min(int(d["started_at"]) for d in batch)
+        next_to = oldest - 1
+        if to_ts is not None and next_to >= to_ts:
+            break
+        to_ts = next_to
+        time.sleep(0.2)
+        if page > 50:
+            print("  drives: pagination safety stop", file=sys.stderr)
+            break
+    return out
 
 
 # ── Pstryk prices (full_price / price_gross) ─────────────────────────────────
@@ -472,6 +562,156 @@ def monthly_to_simple(monthly_rows: list[dict]) -> list[dict]:
     ]
 
 
+def short_place(loc: str | None, saved: str | None = None) -> str:
+    if saved and str(saved).strip():
+        return str(saved).strip()
+    if not loc:
+        return ""
+    return str(loc).split(",")[0].strip()
+
+
+def drive_to_row(d: dict) -> dict:
+    start = int(d["started_at"])
+    end = int(d.get("ended_at") or start)
+    return {
+        "start_local": fmt_local(start),
+        "end_local": fmt_local(end),
+        "duration_min": int(round((end - start) / 60)),
+        "distance_km": round(float(d.get("odometer_distance") or 0), 2),
+        "energy_kwh": round(float(d.get("energy_used") or 0), 2),
+        "max_speed_kmh": round(float(d.get("max_speed") or 0), 1),
+        "avg_speed_kmh": round(float(d.get("average_speed") or 0), 1),
+        "from": short_place(d.get("starting_location"), d.get("starting_saved_location")),
+        "to": short_place(d.get("ending_location"), d.get("ending_saved_location")),
+        "soc_start": d.get("starting_battery", ""),
+        "soc_end": d.get("ending_battery", ""),
+        "odometer_start": d.get("starting_odometer", ""),
+        "tessie_id": d.get("id", ""),
+    }
+
+
+def week_monday(d: date) -> date:
+    """Monday of the Mon–Sun week containing d (Europe/Warsaw calendar)."""
+    return d - timedelta(days=d.weekday())  # Mon=0
+
+
+def last_complete_week(today: date | None = None) -> tuple[date, date]:
+    """
+    Most recent fully finished Mon–Sun week.
+    On Monday (or later), that is the week ending the previous Sunday.
+    """
+    today = today or datetime.now(WARSAW).date()
+    this_mon = week_monday(today)
+    start = this_mon - timedelta(days=7)
+    end = start + timedelta(days=6)
+    return start, end
+
+
+def build_drive_rows(drives: list[dict]) -> list[dict]:
+    rows = [drive_to_row(d) for d in drives]
+    rows.sort(key=lambda r: r["start_local"])
+    return rows
+
+
+def build_weekly_drive_rows(drive_rows: list[dict]) -> list[dict]:
+    """Aggregate Mon–Sun weeks (Warsaw). Newest week first."""
+    buckets: dict[date, list[dict]] = defaultdict(list)
+    for r in drive_rows:
+        try:
+            d = datetime.strptime(r["start_local"][:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        buckets[week_monday(d)].append(r)
+
+    weeks: list[dict] = []
+    for mon in sorted(buckets.keys(), reverse=True):
+        group = buckets[mon]
+        sun = mon + timedelta(days=6)
+        hours = sum(float(r.get("duration_min") or 0) for r in group) / 60.0
+        dist = sum(float(r.get("distance_km") or 0) for r in group)
+        energy = sum(float(r.get("energy_kwh") or 0) for r in group)
+        best = max(group, key=lambda r: float(r.get("max_speed_kmh") or 0))
+        weeks.append(
+            {
+                "week_start": mon.isoformat(),
+                "week_end": sun.isoformat(),
+                "drives": len(group),
+                "hours": round(hours, 2),
+                "distance_km": round(dist, 1),
+                "energy_kwh": round(energy, 1),
+                "max_speed_kmh": best.get("max_speed_kmh", ""),
+                "max_speed_when": best.get("start_local", ""),
+                "max_speed_from": best.get("from", ""),
+                "max_speed_to": best.get("to", ""),
+            }
+        )
+    return weeks
+
+
+def find_max_speed_drive(drive_rows: list[dict]) -> dict | None:
+    if not drive_rows:
+        return None
+    return max(drive_rows, key=lambda r: float(r.get("max_speed_kmh") or 0))
+
+
+def format_weekly_email(
+    week: dict,
+    all_time_max: dict | None,
+    sheet_url: str | None = None,
+) -> tuple[str, str]:
+    subject = (
+        f"Myszolot week {week['week_start']} → {week['week_end']}: "
+        f"{week['distance_km']} km"
+    )
+    lines = [
+        f"Weekly drive summary (Mon–Sun, Europe/Warsaw)",
+        f"Week: {week['week_start']} → {week['week_end']}",
+        "",
+        f"Drives:       {week['drives']}",
+        f"Drive hours:  {week['hours']} h",
+        f"Distance:     {week['distance_km']} km",
+        f"Energy used:  {week['energy_kwh']} kWh",
+        f"Max speed:    {week['max_speed_kmh']} km/h",
+        f"  when:       {week['max_speed_when']}",
+        f"  route:      {week['max_speed_from']} → {week['max_speed_to']}",
+    ]
+    if all_time_max:
+        lines += [
+            "",
+            "All-time max speed (Tessie history):",
+            f"  {all_time_max.get('max_speed_kmh')} km/h on {all_time_max.get('start_local')}",
+            f"  {all_time_max.get('from')} → {all_time_max.get('to')}",
+            f"  distance {all_time_max.get('distance_km')} km, energy {all_time_max.get('energy_kwh')} kWh",
+        ]
+    if sheet_url:
+        lines += ["", f"Sheet: {sheet_url}"]
+    return subject, "\n".join(lines) + "\n"
+
+
+def send_email(subject: str, body: str, to: str | None = None) -> None:
+    to_addr = (to or os.environ.get("WEEKLY_EMAIL_TO") or os.environ.get("EMAIL_TO") or "").strip()
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASS", "").strip()
+    from_addr = os.environ.get("SMTP_FROM", user).strip()
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    if not all([to_addr, host, user, password, from_addr]):
+        raise SystemExit(
+            "Email needs WEEKLY_EMAIL_TO (or EMAIL_TO), SMTP_HOST, SMTP_PORT, "
+            "SMTP_USER, SMTP_PASS, SMTP_FROM"
+        )
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.set_content(body)
+    with smtplib.SMTP(host, port, timeout=30) as s:
+        s.starttls()
+        s.login(user, password)
+        s.send_message(msg)
+    print(f"Email sent to {to_addr}", file=sys.stderr)
+
+
 def write_csv(rows: list[dict], path: Path, fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -486,6 +726,8 @@ def push_sheet(
     monthly_rows: list[dict],
     other_loc_rows: list[dict],
     sheet_id: str,
+    drive_rows: list[dict] | None = None,
+    weekly_drive_rows: list[dict] | None = None,
 ) -> str:
     from google.oauth2.service_account import Credentials
     import gspread
@@ -515,6 +757,14 @@ def push_sheet(
                 rows=max(min_rows, len(rows) + 20),
                 cols=max(12, len(fields) + 2),
             )
+        # Resize if needed for large drive history
+        need_rows = len(rows) + 5
+        need_cols = len(fields) + 2
+        try:
+            if ws.row_count < need_rows or ws.col_count < need_cols:
+                ws.resize(rows=max(ws.row_count, need_rows), cols=max(ws.col_count, need_cols))
+        except Exception:
+            pass
         values = [fields] + [[r.get(f, "") for f in fields] for r in rows]
         if values:
             ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
@@ -523,6 +773,15 @@ def push_sheet(
     upsert("charging_log", SHEET_SESSION_FIELDS, session_rows, 2000)
     upsert("monthly_detail", MONTHLY_FIELDS, monthly_rows, 50)
     upsert("other_locations", OTHER_LOC_FIELDS, other_loc_rows, 20)
+    if drive_rows is not None:
+        upsert("drive_log", DRIVE_FIELDS, drive_rows, max(500, len(drive_rows) + 50))
+    if weekly_drive_rows is not None:
+        upsert(
+            "weekly_drive_summary",
+            WEEKLY_DRIVE_FIELDS,
+            weekly_drive_rows,
+            max(100, len(weekly_drive_rows) + 20),
+        )
 
     for obsolete in ("totals", "monthly"):
         try:
@@ -533,7 +792,14 @@ def push_sheet(
 
     try:
         order = []
-        for name in ("monthly_total", "charging_log", "monthly_detail", "other_locations"):
+        for name in (
+            "monthly_total",
+            "charging_log",
+            "monthly_detail",
+            "other_locations",
+            "weekly_drive_summary",
+            "drive_log",
+        ):
             try:
                 order.append(sh.worksheet(name))
             except Exception:
@@ -555,6 +821,8 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     monthly_csv = (
         Path(args.monthly_out) if args.monthly_out else out_dir / "myszolot-monthly-costs.csv"
     )
+    drives_csv = out_dir / "myszolot-drives.csv"
+    weekly_csv = out_dir / "myszolot-weekly-drives.csv"
 
     print(f"Tessie charges {vin}…", file=sys.stderr)
     all_c = fetch_all_tessie_charges(vin)
@@ -606,18 +874,104 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    print(f"Tessie drives {vin}…", file=sys.stderr)
+    all_drives = fetch_all_tessie_drives(vin)
+    drive_rows = build_drive_rows(all_drives)
+    weekly_rows = build_weekly_drive_rows(drive_rows)
+    write_csv(drive_rows, drives_csv, DRIVE_FIELDS)
+    write_csv(weekly_rows, weekly_csv, WEEKLY_DRIVE_FIELDS)
+
+    top = find_max_speed_drive(drive_rows)
+    print(
+        f"drives={len(drive_rows)}  weeks={len(weekly_rows)}  "
+        f"km={sum(float(r['distance_km']) for r in drive_rows):.1f}  "
+        f"energy={sum(float(r['energy_kwh']) for r in drive_rows):.1f} kWh",
+        file=sys.stderr,
+    )
+    if top:
+        print(
+            f"all-time max speed: {top['max_speed_kmh']} km/h on {top['start_local']} "
+            f"({top['from']} → {top['to']})",
+            file=sys.stderr,
+        )
+
     kwh = sum(float(r["kwh_added"]) for r in rows)
     cost = sum(float(r["full_cost_pln"]) for r in rows if r["full_cost_pln"] != "")
     print(f"sessions={len(rows)}  EV_kWh={kwh:.1f}  EV_full_variable_PLN={cost:.2f}")
     print(f"csv={out_csv}")
     print(f"monthly_csv={monthly_csv}")
+    print(f"drives_csv={drives_csv}")
+    print(f"weekly_csv={weekly_csv}")
     if rows:
         print(f"range={rows[0]['start_local']} → {rows[-1]['start_local']}")
 
     do_sheet = args.sheet or os.environ.get("PUSH_SHEET", "").lower() in ("1", "true", "yes")
     if do_sheet:
-        url = push_sheet(rows, monthly, other_loc, sheet_id)
+        url = push_sheet(
+            rows,
+            monthly,
+            other_loc,
+            sheet_id,
+            drive_rows=drive_rows,
+            weekly_drive_rows=weekly_rows,
+        )
         print(f"sheet={url}")
+    return 0
+
+
+def cmd_weekly_email(args: argparse.Namespace) -> int:
+    """Email last complete Mon–Sun week summary (intended for Monday 21:30)."""
+    today = datetime.now(WARSAW).date()
+    if not args.force and today.weekday() != 0:
+        msg = f"Today is {today.isoformat()} (weekday={today.weekday()}) — not Monday; skip (use --force)."
+        print(msg, file=sys.stderr)
+        return 0
+
+    vin = os.environ.get("VIN") or args.vin
+    sheet_id = os.environ.get("SHEET_ID") or args.sheet_id
+    week_start, week_end = last_complete_week(today)
+    if args.week_start:
+        week_start = date.fromisoformat(args.week_start)
+        week_end = week_start + timedelta(days=6)
+
+    print(f"Tessie drives for weekly email {vin}…", file=sys.stderr)
+    all_drives = fetch_all_tessie_drives(vin)
+    drive_rows = build_drive_rows(all_drives)
+    weekly_rows = build_weekly_drive_rows(drive_rows)
+    all_time = find_max_speed_drive(drive_rows)
+
+    week = next(
+        (w for w in weekly_rows if w["week_start"] == week_start.isoformat()),
+        None,
+    )
+    if week is None:
+        # Empty week — still report zeros
+        week = {
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "drives": 0,
+            "hours": 0.0,
+            "distance_km": 0.0,
+            "energy_kwh": 0.0,
+            "max_speed_kmh": 0,
+            "max_speed_when": "",
+            "max_speed_from": "",
+            "max_speed_to": "",
+        }
+        print(f"No drives in week {week_start} → {week_end}", file=sys.stderr)
+
+    sheet_url = (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        if sheet_id
+        else None
+    )
+    subject, body = format_weekly_email(week, all_time, sheet_url)
+    print(body)
+    if args.dry_run:
+        print("(dry-run — no email)", file=sys.stderr)
+        return 0
+    to = args.to or os.environ.get("WEEKLY_EMAIL_TO") or "jjsateam@gmail.com"
+    send_email(subject, body, to=to)
     return 0
 
 
@@ -633,6 +987,23 @@ def main() -> int:
         p.add_argument("--sheet", action="store_true")
         p.add_argument("--sheet-id", default=SHEET_ID_DEFAULT)
         p.set_defaults(func=cmd_rebuild)
+
+    we = sub.add_parser(
+        "weekly-email",
+        help="Email last complete Mon–Sun drive summary (cron: Mon 21:30)",
+    )
+    we.add_argument("--vin", default=VIN_DEFAULT)
+    we.add_argument("--sheet-id", default=SHEET_ID_DEFAULT)
+    we.add_argument("--to", default=None, help="Override WEEKLY_EMAIL_TO")
+    we.add_argument(
+        "--week-start",
+        default=None,
+        help="ISO Monday date YYYY-MM-DD (default: last complete week)",
+    )
+    we.add_argument("--force", action="store_true", help="Send even if not Monday")
+    we.add_argument("--dry-run", action="store_true", help="Print only, no SMTP")
+    we.set_defaults(func=cmd_weekly_email)
+
     args = ap.parse_args()
     return args.func(args)
 

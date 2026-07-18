@@ -12,12 +12,14 @@ Lightweight container that rebuilds the Google Sheet charge log daily.
 | `SHEET_ID` | no | Default: Home Charging Costs sheet |
 | `VIN` | no | Tesla VIN |
 | `PUSH_SHEET` | no | `true` to push Google Sheet |
+| `SMTP_*` + `WEEKLY_EMAIL_TO` | for weekly email | Monday drive summary |
 
 Host layout on **CT 119 services** (`192.168.1.219`):
 
 ```text
 /opt/services/charge-log/
   docker-compose.yml
+  run.sh / run-weekly-email.sh
   .env                          # mode 600
   secrets/google-sa.json        # mode 600
   data/                         # CSV output
@@ -26,7 +28,9 @@ Host layout on **CT 119 services** (`192.168.1.219`):
 ## Cron (on services host)
 
 ```cron
-15 6 * * * cd /opt/services/charge-log && /usr/bin/docker compose run --rm charge-log >> /var/log/charge-log.log 2>&1
+15 6 * * * /opt/services/charge-log/run.sh
+30 21 * * 1 /opt/services/charge-log/run-weekly-email.sh
 ```
 
-Not on charge-session end — full rebuild of all tabs once per day.
+Daily: full rebuild of charge + **drive** tabs.  
+Monday 21:30: email last complete Mon–Sun week to `WEEKLY_EMAIL_TO`.
