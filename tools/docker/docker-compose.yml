@@ -1,0 +1,21 @@
+# Charge log sync — services LXC CT 119 (192.168.1.219)
+# Secrets (host, not in image): .env + secrets/google-sa.json
+# Cron: 15 6 * * * /opt/services/charge-log/run.sh
+# Note: CT 119 has docker-compose v1, not `docker compose` v2.
+version: "3.3"
+services:
+  charge-log:
+    image: charge-log:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      OUTPUT_DIR: /data
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/google-sa.json
+      PUSH_SHEET: "true"
+    volumes:
+      - ./data:/data
+      - ./secrets/google-sa.json:/secrets/google-sa.json:ro
+    restart: "no"

@@ -208,3 +208,6 @@ __marimo__/
 
 .venv-sheets/
 *.log
+tools/docker/charge_log.py
+tools/docker/.env
+tools/docker/secrets/
