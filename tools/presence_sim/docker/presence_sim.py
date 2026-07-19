@@ -9,17 +9,22 @@ Vacant when BOTH personal phones are offline on Omada for >= VACANT_HOURS (24):
 Motion sensors are ignored (false positives). Company phones and other devices
 are ignored. Car is ignored.
 
-When vacant: next evening turn kitchen + salon lights ON around EVENING_ON
-(Warsaw), then OFF at a random time between 22:30 and 23:30.
+When vacant (and not paused): arm a random ON time at 20:00 Warsaw ±15 min
+(all kitchen+salon lights together), then OFF at a random time 22:30–23:30.
+One HA push notify when lights actually turn ON.
+
+Pause: input_boolean.presence_sim_pause ON → no light changes (guests /
+home without phones). Toggle on dashboard.
 
 Commands:
   python presence_sim.py evaluate          # print signals + vacant flag; push HA
   python presence_sim.py run               # evaluate + evening light logic (cron)
-  python presence_sim.py force-on          # turn simulation lights ON (test)
-  python presence_sim.py force-off         # turn simulation lights OFF (test)
+  python presence_sim.py force-on          # turn simulation lights ON (test only)
+  python presence_sim.py force-off         # turn simulation lights OFF (test only)
   python presence_sim.py monitor           # validate tonight's on/off; log 7 days
 
-Env: OMADA_*, HA_URL, HA_TOKEN, optional VACANT_HOURS, STATE_DIR
+Env: OMADA_*, HA_URL, HA_TOKEN, optional VACANT_HOURS, STATE_DIR,
+     HA_NOTIFY_SERVICE (default notify.mobile_app_j23)
 """
 from __future__ import annotations
 
@@ -77,6 +82,9 @@ REQUIRED_PHONES: list[dict[str, Any]] = [
 
 HA_SENSOR_VACANT = "binary_sensor.house_vacant_24h"
 HA_SENSOR_DETAIL = "sensor.house_vacancy_status"
+# ON = pause light simulation (guests / home with phones off). Default off = armed.
+HA_PAUSE_BOOLEAN = "input_boolean.presence_sim_pause"
+HA_NOTIFY_DEFAULT = "notify.mobile_app_j23"
 
 
 def load_env() -> None:
@@ -154,11 +162,16 @@ def ha_set_state(entity_id: str, state: str, attributes: dict | None = None) -> 
     ha_post(f"/api/states/{entity_id}", body)
 
 
-def ha_call_service(domain: str, service: str, entity_id: str | list[str]) -> None:
-    ha_post(
-        f"/api/services/{domain}/{service}",
-        {"entity_id": entity_id},
-    )
+def ha_call_service(
+    domain: str,
+    service: str,
+    entity_id: str | list[str] | None = None,
+    data: dict | None = None,
+) -> None:
+    body: dict[str, Any] = dict(data or {})
+    if entity_id is not None:
+        body["entity_id"] = entity_id
+    ha_post(f"/api/services/{domain}/{service}", body)
 
 
 def ha_current_state(entity_id: str) -> tuple[str, datetime | None]:
@@ -167,6 +180,35 @@ def ha_current_state(entity_id: str) -> tuple[str, datetime | None]:
     raw = d.get("last_changed")
     ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
     return st, ts
+
+
+def sim_paused() -> bool:
+    """True when dashboard pause helper is ON. Missing entity → not paused."""
+    try:
+        st, _ = ha_current_state(HA_PAUSE_BOOLEAN)
+        return st == "on"
+    except Exception as e:
+        print(f"pause helper read failed ({HA_PAUSE_BOOLEAN}): {e}", file=sys.stderr)
+        return False
+
+
+def notify_presence_started(on_at: datetime, off_dl: datetime) -> None:
+    """Single phone push: evening simulation lights just turned ON."""
+    service = os.environ.get("HA_NOTIFY_SERVICE", HA_NOTIFY_DEFAULT).strip()
+    if "." in service:
+        domain, name = service.split(".", 1)
+    else:
+        domain, name = "notify", service
+    title = "Presence simulation started"
+    message = (
+        f"Kitchen + salon lights ON at {on_at.strftime('%H:%M')} "
+        f"(scheduled window 20:00±15). Off around {off_dl.strftime('%H:%M')}."
+    )
+    try:
+        ha_call_service(domain, name, data={"title": title, "message": message})
+        print(f"notify: {service} — {message}", file=sys.stderr)
+    except Exception as e:
+        print(f"notify failed ({service}): {e}", file=sys.stderr)
 
 
 # ── Omada ────────────────────────────────────────────────────────────────────
@@ -426,7 +468,15 @@ def evaluate_vacancy() -> VacancyReport:
     )
 
 
-def push_vacancy_to_ha(report: VacancyReport) -> None:
+def push_vacancy_to_ha(
+    report: VacancyReport,
+    *,
+    paused: bool | None = None,
+    sim: "SimState | None" = None,
+) -> None:
+    if paused is None:
+        paused = sim_paused()
+    st = sim if sim is not None else load_sim_state()
     attrs = {
         "friendly_name": "House vacant 24h",
         "device_class": "occupancy",
@@ -440,11 +490,19 @@ def push_vacancy_to_ha(report: VacancyReport) -> None:
         "reasons": report.reasons,
         "evaluated_at": report.evaluated_at,
         "source": "omada_s23_z2_flip",
+        "sim_paused": paused,
+        "on_deadline": st.on_deadline,
+        "off_deadline": st.off_deadline,
+        "lights_on_at": st.lights_on_at,
+        "lights_off_at": st.lights_off_at,
         "icon": "mdi:home-off" if report.vacant else "mdi:home-account",
     }
     ha_set_state(HA_SENSOR_VACANT, "on" if report.vacant else "off", attrs)
-    if report.vacant:
-        summary = "vacant (S23+Z2 Flip offline ≥24h)"
+    if paused and report.vacant:
+        summary = "vacant but sim PAUSED (override)"
+    elif report.vacant:
+        on_s = (st.on_deadline or "")[11:16] if st.on_deadline else "±15"
+        summary = f"vacant — sim armed (ON ~{on_s})"
     else:
         summary = "home/active: " + "; ".join(report.reasons[:3])
     ha_set_state(
@@ -465,8 +523,10 @@ class SimState:
     date: str = ""  # Warsaw date we armed
     lights_on_at: str | None = None
     lights_off_at: str | None = None
+    on_deadline: str | None = None  # ISO: random 20:00 ±15 Warsaw
     off_deadline: str | None = None  # ISO when to turn off
-    forced: bool = False
+    notified_on: bool = False  # one push per evening ON
+    forced: bool = False  # legacy; force-on/off no longer poison the day cycle
 
 
 def load_sim_state() -> SimState:
@@ -474,7 +534,11 @@ def load_sim_state() -> SimState:
     if not path.exists():
         return SimState()
     try:
-        return SimState(**json.loads(path.read_text()))
+        raw = json.loads(path.read_text())
+        # tolerate older state files missing new fields
+        return SimState(
+            **{k: v for k, v in raw.items() if k in SimState.__dataclass_fields__}
+        )
     except Exception:
         return SimState()
 
@@ -486,9 +550,19 @@ def save_sim_state(st: SimState) -> None:
 
 
 def turn_lights(on: bool) -> None:
+    """All kitchen + salon switches together (single HA service call)."""
     service = "turn_on" if on else "turn_off"
     ha_call_service("switch", service, LIGHTS)
     print(f"lights {service}: {LIGHTS}", file=sys.stderr)
+
+
+def pick_on_deadline(day: date) -> datetime:
+    """Random ON at 20:00 Warsaw ± EVENING_ON_JITTER_MIN (default 15)."""
+    hour = int(os.environ.get("EVENING_ON_HOUR", "20"))
+    minute = int(os.environ.get("EVENING_ON_MINUTE", "0"))
+    jitter = int(os.environ.get("EVENING_ON_JITTER_MIN", "15"))
+    base = datetime(day.year, day.month, day.day, hour, minute, tzinfo=WARSAW)
+    return base + timedelta(minutes=random.randint(-jitter, jitter))
 
 
 def pick_off_deadline(day: date) -> datetime:
@@ -498,11 +572,25 @@ def pick_off_deadline(day: date) -> datetime:
     return start + delta
 
 
-def evening_on_time(day: date) -> datetime:
-    """Default: 20:00 Warsaw (nearest evening window start)."""
-    hour = int(os.environ.get("EVENING_ON_HOUR", "20"))
-    minute = int(os.environ.get("EVENING_ON_MINUTE", "0"))
-    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=WARSAW)
+def arm_day_schedule(st: SimState, today: date) -> SimState:
+    """Pick tonight's ON/OFF deadlines once per Warsaw day."""
+    today_s = today.isoformat()
+    if st.date == today_s and st.on_deadline and st.off_deadline:
+        return st
+    on_dl = pick_on_deadline(today)
+    off_dl = pick_off_deadline(today)
+    # Guarantee off is after on (edge: late on + early off shouldn't happen, but)
+    if off_dl <= on_dl:
+        off_dl = on_dl + timedelta(hours=2, minutes=random.randint(0, 30))
+    return SimState(
+        date=today_s,
+        on_deadline=on_dl.isoformat(),
+        off_deadline=off_dl.isoformat(),
+        lights_on_at=None,
+        lights_off_at=None,
+        notified_on=False,
+        forced=False,
+    )
 
 
 def run_simulation_tick(report: VacancyReport, force: bool = False) -> SimState:
@@ -510,48 +598,59 @@ def run_simulation_tick(report: VacancyReport, force: bool = False) -> SimState:
     today = now_warsaw().date()
     today_s = today.isoformat()
     now = now_warsaw()
+    paused = sim_paused()
 
-    # Reset state on new day
-    if st.date and st.date != today_s:
+    # New Warsaw day → fresh schedule
+    if st.date != today_s:
         st = SimState()
 
     vacant = report.vacant or force
-    if force:
-        st.forced = True
 
     if not vacant:
         save_sim_state(st)
         print("sim: not vacant — no light changes", file=sys.stderr)
         return st
 
-    on_at = evening_on_time(today)
-    # If we start after on_at but before 22:30, still turn on once
-    latest_on = datetime(today.year, today.month, today.day, 22, 15, tzinfo=WARSAW)
+    # Arm random ON/OFF for tonight (even if paused — so dashboard shows plan)
+    st = arm_day_schedule(st, today)
+    on_dl = datetime.fromisoformat(st.on_deadline)  # type: ignore[arg-type]
+    off_dl = datetime.fromisoformat(st.off_deadline)  # type: ignore[arg-type]
 
-    if st.lights_on_at is None and now >= on_at and now <= latest_on:
-        turn_lights(True)
-        st.date = today_s
-        st.lights_on_at = now.isoformat()
-        off_dl = pick_off_deadline(today)
-        st.off_deadline = off_dl.isoformat()
-        st.lights_off_at = None
+    if paused:
         save_sim_state(st)
-        print(f"sim: lights ON; off deadline {off_dl}", file=sys.stderr)
+        print(
+            f"sim: PAUSED (input_boolean.presence_sim_pause=on) — "
+            f"would ON {on_dl.strftime('%H:%M')} OFF {off_dl.strftime('%H:%M')}",
+            file=sys.stderr,
+        )
         return st
 
-    if st.lights_on_at and not st.lights_off_at and st.off_deadline:
-        off_dl = datetime.fromisoformat(st.off_deadline)
-        if now >= off_dl:
-            turn_lights(False)
-            st.lights_off_at = now.isoformat()
-            save_sim_state(st)
-            print("sim: lights OFF", file=sys.stderr)
-            return st
+    # Turn ON once when we reach the random deadline (all lights together)
+    # Catch up until 22:15 if cron missed the exact minute
+    latest_on = datetime(today.year, today.month, today.day, 22, 15, tzinfo=WARSAW)
+    if st.lights_on_at is None and now >= on_dl and now <= latest_on:
+        turn_lights(True)
+        st.lights_on_at = now.isoformat()
+        st.lights_off_at = None
+        if not st.notified_on:
+            notify_presence_started(now, off_dl)
+            st.notified_on = True
+        save_sim_state(st)
+        print(f"sim: lights ON; scheduled_on={on_dl} off_deadline={off_dl}", file=sys.stderr)
+        return st
+
+    if st.lights_on_at and not st.lights_off_at and now >= off_dl:
+        turn_lights(False)
+        st.lights_off_at = now.isoformat()
+        save_sim_state(st)
+        print("sim: lights OFF", file=sys.stderr)
+        return st
 
     save_sim_state(st)
     print(
-        f"sim: idle date={st.date} on={st.lights_on_at} off={st.lights_off_at} "
-        f"deadline={st.off_deadline}",
+        f"sim: idle date={st.date} scheduled_on={st.on_deadline} "
+        f"on_at={st.lights_on_at} off_at={st.lights_off_at} "
+        f"off_deadline={st.off_deadline} paused={paused}",
         file=sys.stderr,
     )
     return st
@@ -562,10 +661,12 @@ def run_simulation_tick(report: VacancyReport, force: bool = False) -> SimState:
 def monitor_once() -> dict:
     """
     Check whether tonight's simulation on/off happened (or was correctly skipped).
+    Validates *real switch state*, not just timestamps. Log-only (no notify).
     Appends to STATE_DIR/monitor.jsonl. Designed for cron over 7 days.
     """
     report = evaluate_vacancy()
     st = load_sim_state()
+    paused = sim_paused()
     today = now_warsaw().date().isoformat()
     light_states = {}
     for eid in LIGHTS:
@@ -576,35 +677,55 @@ def monitor_once() -> dict:
             light_states[eid] = f"err:{e}"
 
     any_on = any(v == "on" for v in light_states.values())
-    entry = {
+    all_on = all(v == "on" for v in light_states.values())
+    entry: dict[str, Any] = {
         "ts": now_utc().isoformat(),
         "warsaw_date": today,
         "vacant": report.vacant,
+        "paused": paused,
         "reasons": report.reasons,
         "sim_state": asdict(st),
         "lights": light_states,
         "any_light_on": any_on,
+        "all_lights_on": all_on,
         "ok_expected_on": None,
         "ok_expected_off": None,
         "note": "",
     }
 
     now = now_warsaw()
-    # After 20:15 if vacant and not yet off deadline: expect some lights on
-    if report.vacant and now.hour >= 20 and now.hour < 22:
-        entry["ok_expected_on"] = bool(st.lights_on_at) or any_on
-        if not entry["ok_expected_on"]:
-            entry["note"] = "vacant evening but lights not marked ON yet"
-    if report.vacant and st.off_deadline:
-        off_dl = datetime.fromisoformat(st.off_deadline)
-        if now >= off_dl + timedelta(minutes=10):
-            entry["ok_expected_off"] = (not any_on) and bool(st.lights_off_at)
-            if not entry["ok_expected_off"]:
-                entry["note"] = "past off deadline but lights still on / not recorded"
-    if not report.vacant:
-        entry["note"] = "not vacant — simulation correctly idle"
-        entry["ok_expected_on"] = True  # N/A pass
+    on_dl = datetime.fromisoformat(st.on_deadline) if st.on_deadline else None
+    off_dl = datetime.fromisoformat(st.off_deadline) if st.off_deadline else None
+
+    if paused:
+        entry["note"] = "sim paused (presence_sim_pause=on) — no light expectation"
+        entry["ok_expected_on"] = True
         entry["ok_expected_off"] = True
+    elif not report.vacant:
+        entry["note"] = "not vacant — simulation correctly idle"
+        entry["ok_expected_on"] = True
+        entry["ok_expected_off"] = True
+    else:
+        # Expect ON: ≥15 min after scheduled on_deadline, before off_deadline
+        if on_dl and off_dl and now >= on_dl + timedelta(minutes=15) and now < off_dl:
+            # Real switches must be on (timestamps alone are not enough)
+            entry["ok_expected_on"] = any_on and bool(st.lights_on_at)
+            if not any_on:
+                entry["note"] = (
+                    f"FAIL: vacant evening, scheduled ON {on_dl.strftime('%H:%M')} "
+                    "but switches are OFF"
+                )
+            elif not st.lights_on_at:
+                entry["note"] = "FAIL: lights ON in HA but sim_state missing lights_on_at"
+        if off_dl and now >= off_dl + timedelta(minutes=10):
+            entry["ok_expected_off"] = (not any_on) and bool(st.lights_off_at)
+            if any_on:
+                entry["note"] = (
+                    f"FAIL: past off deadline {off_dl.strftime('%H:%M')} "
+                    "but some lights still ON"
+                )
+            elif not st.lights_off_at:
+                entry["note"] = "FAIL: lights off but sim_state missing lights_off_at"
 
     path = state_dir() / "monitor.jsonl"
     with path.open("a", encoding="utf-8") as f:
@@ -627,31 +748,25 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     report = evaluate_vacancy()
     print(json.dumps(asdict(report), indent=2, ensure_ascii=False))
-    push_vacancy_to_ha(report)
-    run_simulation_tick(report, force=args.force)
+    st = run_simulation_tick(report, force=args.force)
+    push_vacancy_to_ha(report, sim=st)
     return 0 if report.vacant or args.force else 2
 
 
 def cmd_force_on(_: argparse.Namespace) -> int:
+    """Test only: toggle lights ON without poisoning tonight's schedule."""
     turn_lights(True)
-    st = load_sim_state()
-    today = now_warsaw().date()
-    st.date = today.isoformat()
-    st.lights_on_at = now_warsaw().isoformat()
-    st.off_deadline = pick_off_deadline(today).isoformat()
-    st.forced = True
-    st.lights_off_at = None
-    save_sim_state(st)
-    print("forced ON; off_deadline", st.off_deadline)
+    print(
+        "forced ON (test only — does not mark evening cycle complete; no notify)",
+        file=sys.stderr,
+    )
     return 0
 
 
 def cmd_force_off(_: argparse.Namespace) -> int:
+    """Test only: toggle lights OFF without poisoning tonight's schedule."""
     turn_lights(False)
-    st = load_sim_state()
-    st.lights_off_at = now_warsaw().isoformat()
-    save_sim_state(st)
-    print("forced OFF")
+    print("forced OFF (test only — evening cycle state unchanged)", file=sys.stderr)
     return 0
 
 

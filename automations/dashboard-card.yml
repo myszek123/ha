@@ -179,7 +179,15 @@ cards:
       ### Presence / vacant home
 
 
-      {% if v == 'on' %}
+      {% set pause = states('input_boolean.presence_sim_pause') %}
+
+      {% set on_dl = state_attr('binary_sensor.house_vacant_24h', 'on_deadline') %}
+
+      {% if pause == 'on' %}
+
+      **Presence sim PAUSED** — lights will not change (guests / home without phones)
+
+      {% elif v == 'on' %}
 
       **House vacant ≥ 24h** — evening light simulation armed
 
@@ -200,8 +208,14 @@ cards:
 
       - **Z2 Flip** (Sylwia): {% if z2o == true %}online{% elif z2o == false %}offline {{ z2a }}h{% else %}?{% endif %}
 
+      {% if on_dl %}
 
-      _Omada only (no motion). When vacant: lights 20:00 on → off 22:30–23:30._
+      - Tonight ON schedule: `{{ on_dl[11:16] }}` (20:00±15)
+
+      {% endif %}
+
+
+      _Omada only. Vacant → lights ON together at random 20:00±15, OFF 22:30–23:30. One phone notify on ON. Pause toggle below for guests / home with phones off._
 
   - type: grid
     columns: 2
@@ -215,6 +229,11 @@ cards:
         entity: sensor.house_vacancy_status
         name: Vacancy detail
         icon: mdi:shield-home
+      - type: tile
+        entity: input_boolean.presence_sim_pause
+        name: Pause presence sim
+        icon: mdi:account-supervisor
+        color: amber
 
   # ── Last complete drive week (Mon–Sun, from charge-log) ───────────────────
   - type: markdown

@@ -11,14 +11,35 @@ House is **vacant ≥ 24h** when **both** personal phones are offline on Omada:
 - Company phones / other Omada clients **ignored**.
 - Car **ignored**.
 
-When vacant: turn **kitchen + salon** switches ON at **20:00** Warsaw, OFF at a random time in **22:30–23:30**.
+## Evening lights (when vacant and not paused)
+
+| Step | Behaviour |
+|------|-----------|
+| ON | **All** kitchen + salon switches together at random **20:00 ±15 min** Warsaw |
+| OFF | Random time in **22:30–23:30** Warsaw |
+| Notify | **One** phone push when lights actually turn ON (`notify.mobile_app_j23`) |
+
+## Pause / override (dashboard)
+
+| Entity | Meaning |
+|--------|---------|
+| `input_boolean.presence_sim_pause` | **ON** = do not change lights (guests, home with phones off, sister overnight, …). **OFF** (default) = simulation allowed when vacant |
+
+Vacancy sensors still update while paused so you can see “phones offline but sim paused”.
+
+Use cases:
+
+- Both phones off / airplane but you’re home → turn **Pause** ON
+- Visitor stays alone overnight while you’re away → turn **Pause** ON (no fake occupancy lights)
+- Normal away trip → leave **Pause** OFF
 
 ## HA entities
 
 | Entity | Meaning |
 |--------|---------|
 | `binary_sensor.house_vacant_24h` | `on` = both phones offline ≥24h |
-| `sensor.house_vacancy_status` | short summary + attributes (`s23_*`, `z2_*`, `phones`) |
+| `sensor.house_vacancy_status` | short summary + attrs (`s23_*`, `z2_*`, `sim_paused`, `on_deadline`, …) |
+| `input_boolean.presence_sim_pause` | manual override |
 
 ## Lights
 
@@ -40,3 +61,5 @@ Cron:
 */15 19-23 * * * /opt/services/presence-sim/run-monitor-7d.sh
 */30 0 * * * /opt/services/presence-sim/run-monitor-7d.sh
 ```
+
+Monitor validates **real switch state** (not just timestamps) and logs only — no extra notify.
