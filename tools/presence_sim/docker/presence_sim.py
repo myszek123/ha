@@ -2,15 +2,14 @@
 """
 Deterministic house vacancy (24h) + evening presence simulation.
 
-Vacant when ALL hold for >= VACANT_HOURS (default 24):
-  - kitchen occupancy not active; last ON >= 24h ago
-  - storage occupancy not active; last ON >= 24h ago
-  - no family phones currently on Omada Wi‑Fi (Jakub / Sylwia name patterns)
-    and each matched phone's lastSeen >= 24h ago
+Vacant when BOTH personal phones are offline on Omada for >= VACANT_HOURS (24):
+  - Jakub: Omada client name matching **S23**
+  - Sylwia: Omada client name matching **Z2 Flip**
 
-Car presence is intentionally ignored.
+Motion sensors are ignored (false positives). Company phones and other devices
+are ignored. Car is ignored.
 
-When vacant: on the next evening turn kitchen + salon lights ON around EVENING_ON
+When vacant: next evening turn kitchen + salon lights ON around EVENING_ON
 (Warsaw), then OFF at a random time between 22:30 and 23:30.
 
 Commands:
@@ -50,9 +49,6 @@ WARSAW = ZoneInfo("Europe/Warsaw")
 OMADA_ID_DEFAULT = "f73430f00af50891401c5757461f73f8"
 SITE_ID_DEFAULT = "69bfd1dba7c1f205eb79303c"
 
-KITCHEN_OCC = "binary_sensor.motiondetectionkitchenloaded_occupancy"
-STORAGE_OCC = "binary_sensor.motiondetectionstorageroom_occupancy"
-
 # Switches used for presence simulation (kitchen + salon / living room)
 LIGHTS = [
     "switch.kitchenlight_l1",
@@ -62,28 +58,22 @@ LIGHTS = [
     "switch.livinroomstandinglamp",
 ]
 
-# Omada client name substrings (case-insensitive) → person bucket
-PHONE_MATCHERS: dict[str, list[str]] = {
-    "jakub": [
-        "s23",
-        "j23",
-        "jakub",
-        "kuby",
-        "privkuby",
-        "firmowykuby",
-        "firmowykuby(dotdata)",
-    ],
-    "sylwia": [
-        "sylwi",
-        "z2 flip",
-        "z2flip",
-        "z flip",
-        "firmowysylw",
-        "privsylw",
-        "galaxy z",
-        "galaxy-z",
-    ],
-}
+# Only personal phones (exact Omada client names / tight substrings)
+# Company phones (firmowy*) intentionally excluded.
+REQUIRED_PHONES: list[dict[str, Any]] = [
+    {
+        "id": "jakub_s23",
+        "person": "jakub",
+        "label": "S23",
+        "patterns": ["s23"],  # Omada name "S23"
+    },
+    {
+        "id": "sylwia_z2",
+        "person": "sylwia",
+        "label": "Z2 Flip",
+        "patterns": ["z2 flip", "z2flip"],  # Omada name "Z2 Flip"
+    },
+]
 
 HA_SENSOR_VACANT = "binary_sensor.house_vacant_24h"
 HA_SENSOR_DETAIL = "sensor.house_vacancy_status"
@@ -171,42 +161,6 @@ def ha_call_service(domain: str, service: str, entity_id: str | list[str]) -> No
     )
 
 
-def ha_history_last_real_on(entity_id: str, days: int = 5) -> datetime | None:
-    """
-    Last genuine motion ON: transition into 'on' from 'off' (not from
-    unavailable/unknown after HA restart). Ignores stuck sensors that only
-    re-appear as 'on' after restarts without a prior 'off'.
-    """
-    end = now_utc()
-    start = end - timedelta(days=days)
-    qs = urllib.parse.urlencode(
-        {
-            "filter_entity_id": entity_id,
-            "end_time": end.isoformat().replace("+00:00", "Z"),
-            "significant_changes_only": "true",
-        }
-    )
-    stamp = start.isoformat().replace("+00:00", "Z")
-    data = ha_get(f"/api/history/period/{stamp}?{qs}")
-    states = data[0] if data else []
-    last: datetime | None = None
-    prev = None
-    for s in states:
-        st = s.get("state")
-        raw = s.get("last_changed") or s.get("last_updated")
-        if not raw:
-            prev = st
-            continue
-        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        if st == "on" and prev == "off":
-            if last is None or ts > last:
-                last = ts
-        if st in ("on", "off"):
-            prev = st
-        # unavailable/unknown do not count as prev for off→on
-    return last
-
-
 def ha_current_state(entity_id: str) -> tuple[str, datetime | None]:
     d = ha_get(f"/api/states/{entity_id}")
     st = str(d.get("state", "unknown"))
@@ -283,15 +237,17 @@ def fetch_omada_clients() -> tuple[list[dict], list[dict]]:
     return live, insight
 
 
-def match_person(name: str) -> str | None:
-    n = (name or "").lower().replace(" ", "")
-    n_sp = (name or "").lower()
-    for person, patterns in PHONE_MATCHERS.items():
-        for p in patterns:
-            p2 = p.lower()
-            if p2 in n_sp or p2.replace(" ", "") in n:
-                return person
-    return None
+def name_matches_patterns(name: str, patterns: list[str]) -> bool:
+    n = (name or "").lower().strip()
+    n_ns = n.replace(" ", "")
+    for p in patterns:
+        p2 = p.lower()
+        if p2 == n or p2.replace(" ", "") == n_ns:
+            return True
+        # allow "S23" contained as whole token-ish match
+        if p2 in n or p2.replace(" ", "") in n_ns:
+            return True
+    return False
 
 
 def parse_last_seen_ms(val: Any) -> datetime | None:
@@ -308,61 +264,87 @@ def parse_last_seen_ms(val: Any) -> datetime | None:
 
 @dataclass
 class PhoneStatus:
+    phone_id: str
     person: str
+    label: str
     name: str
     mac: str
     online: bool
     last_seen: datetime | None
     ap: str = ""
     age_hours: float | None = None
+    found: bool = True
 
 
-def collect_phones(live: list[dict], insight: list[dict]) -> list[PhoneStatus]:
+def resolve_required_phones(
+    live: list[dict], insight: list[dict]
+) -> list[PhoneStatus]:
+    """Resolve S23 + Z2 Flip only from Omada live + insight client lists."""
     live_by_mac = {(c.get("mac") or "").upper(): c for c in live}
-    # Build candidates from insight (broader) + live
-    by_key: dict[str, PhoneStatus] = {}
+    out: list[PhoneStatus] = []
 
-    def consider(c: dict, online_hint: bool | None = None) -> None:
-        name = c.get("name") or c.get("hostName") or ""
-        person = match_person(name)
-        if not person:
-            return
-        mac = (c.get("mac") or "").upper()
-        online = online_hint if online_hint is not None else bool(c.get("active"))
-        if mac in live_by_mac:
+    for req in REQUIRED_PHONES:
+        patterns = list(req["patterns"])
+        best: dict | None = None
+        online = False
+        # Prefer live match
+        for c in live:
+            name = c.get("name") or c.get("hostName") or ""
+            if name_matches_patterns(name, patterns):
+                best = c
+                online = True
+                break
+        if best is None:
+            for c in insight:
+                name = c.get("name") or c.get("hostName") or ""
+                if name_matches_patterns(name, patterns):
+                    best = c
+                    break
+
+        if best is None:
+            out.append(
+                PhoneStatus(
+                    phone_id=req["id"],
+                    person=req["person"],
+                    label=req["label"],
+                    name="",
+                    mac="",
+                    online=False,
+                    last_seen=None,
+                    found=False,
+                    age_hours=None,
+                )
+            )
+            continue
+
+        mac = (best.get("mac") or "").upper()
+        if online or mac in live_by_mac:
             online = True
-            c_live = live_by_mac[mac]
-            ap = c_live.get("apName") or ""
+            live_c = live_by_mac.get(mac, best)
+            ap = live_c.get("apName") or ""
             ls = now_utc()
+            name = live_c.get("name") or best.get("name") or req["label"]
         else:
-            ap = c.get("apName") or ""
-            ls = parse_last_seen_ms(c.get("lastSeen"))
-            # insight lastSeen can be stale even for online IoT — for phones offline it's ok
-        age = None
-        if ls:
-            age = (now_utc() - ls).total_seconds() / 3600.0
-        key = f"{person}:{mac or name}"
-        prev = by_key.get(key)
-        if prev and prev.online and not online:
-            return
-        if prev and prev.last_seen and ls and prev.last_seen > ls and not online:
-            return
-        by_key[key] = PhoneStatus(
-            person=person,
-            name=name,
-            mac=mac,
-            online=online,
-            last_seen=ls,
-            ap=ap,
-            age_hours=age,
+            ap = best.get("apName") or ""
+            ls = parse_last_seen_ms(best.get("lastSeen"))
+            name = best.get("name") or best.get("hostName") or req["label"]
+
+        age = (now_utc() - ls).total_seconds() / 3600.0 if ls else None
+        out.append(
+            PhoneStatus(
+                phone_id=req["id"],
+                person=req["person"],
+                label=req["label"],
+                name=name,
+                mac=mac,
+                online=online,
+                last_seen=ls,
+                ap=ap,
+                age_hours=age,
+                found=True,
+            )
         )
-
-    for c in insight:
-        consider(c, online_hint=False)
-    for c in live:
-        consider(c, online_hint=True)
-
-    return sorted(by_key.values(), key=lambda p: (p.person, p.name))
+    return out
 
 
 # ── Vacancy evaluation ───────────────────────────────────────────────────────
@@ -371,125 +353,76 @@ def collect_phones(live: list[dict], insight: list[dict]) -> list[PhoneStatus]:
 class VacancyReport:
     vacant: bool
     vacant_hours_required: float
-    kitchen_state: str
-    kitchen_last_on: str | None
-    kitchen_age_h: float | None
-    storage_state: str
-    storage_last_on: str | None
-    storage_age_h: float | None
     phones: list[dict] = field(default_factory=list)
     phones_blocking: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     evaluated_at: str = ""
+    s23_online: bool | None = None
+    s23_age_h: float | None = None
+    z2_online: bool | None = None
+    z2_age_h: float | None = None
 
 
 def evaluate_vacancy() -> VacancyReport:
+    """Vacant iff S23 and Z2 Flip both offline ≥ VACANT_HOURS (no motion checks)."""
     hours = vacant_hours()
     reasons: list[str] = []
-
-    k_state, k_lc = ha_current_state(KITCHEN_OCC)
-    s_state, s_lc = ha_current_state(STORAGE_OCC)
-    k_last = ha_history_last_real_on(KITCHEN_OCC)
-    s_last = ha_history_last_real_on(STORAGE_OCC)
-
-    # Live ON only counts if it came from a real off→on (see history).
-    # Stuck "on" after HA restart (no off→on in history) is ignored for vacancy.
-    if k_state == "on" and k_last and (now_utc() - k_last).total_seconds() < 3600:
-        # recent real motion within last hour → treat as active now
-        reasons.append("kitchen occupancy currently ON (recent motion)")
-        k_last = now_utc()
-    elif k_state == "on" and k_last is None:
-        reasons.append(
-            "kitchen occupancy stuck ON without off→on history (ignored for vacant)"
-        )
-    elif k_state == "on" and k_last and (now_utc() - k_last).total_seconds() >= 3600:
-        # currently on but last real off→on older — may be stuck; still use k_last age
-        reasons.append(
-            f"kitchen currently ON but last real off→on "
-            f"{(now_utc() - k_last).total_seconds() / 3600:.1f}h ago"
-        )
-
-    if s_state == "on":
-        s_last = now_utc()
-        reasons.append("storage occupancy currently ON")
-
-    def age_h(ts: datetime | None) -> float | None:
-        if not ts:
-            return None
-        return (now_utc() - ts).total_seconds() / 3600.0
-
-    k_age = age_h(k_last)
-    s_age = age_h(s_last)
-
-    if k_age is None:
-        reasons.append("kitchen: no ON history in window (treat as quiet)")
-    elif k_age < hours:
-        reasons.append(f"kitchen last ON {k_age:.1f}h ago (< {hours}h)")
-
-    if s_age is None:
-        reasons.append("storage: no ON history in window (treat as quiet)")
-    elif s_age < hours:
-        reasons.append(f"storage last ON {s_age:.1f}h ago (< {hours}h)")
+    blocking: list[str] = []
 
     live, insight = fetch_omada_clients()
-    phones = collect_phones(live, insight)
-    phone_dicts = []
-    blocking: list[str] = []
+    phones = resolve_required_phones(live, insight)
+    phone_dicts: list[dict] = []
+
     for p in phones:
         phone_dicts.append(
             {
+                "phone_id": p.phone_id,
                 "person": p.person,
+                "label": p.label,
                 "name": p.name,
                 "mac": p.mac,
                 "online": p.online,
                 "ap": p.ap,
+                "found": p.found,
                 "last_seen": p.last_seen.isoformat() if p.last_seen else None,
                 "age_hours": round(p.age_hours, 2) if p.age_hours is not None else None,
             }
         )
+        if not p.found:
+            blocking.append(f"{p.label} not found in Omada")
+            reasons.append(f"{p.label}: not found in Omada client list")
+            continue
         if p.online:
-            blocking.append(f"{p.person}/{p.name} ONLINE on {p.ap or '?'}")
-            reasons.append(f"phone online: {p.name} ({p.person})")
-        elif p.age_hours is not None and p.age_hours < hours:
-            blocking.append(f"{p.person}/{p.name} seen {p.age_hours:.1f}h ago")
-            reasons.append(f"phone recent: {p.name} {p.age_hours:.1f}h ago")
+            blocking.append(f"{p.label} ONLINE on {p.ap or '?'}")
+            reasons.append(f"{p.label} online ({p.ap or 'AP unknown'})")
+        elif p.age_hours is None:
+            blocking.append(f"{p.label} no lastSeen")
+            reasons.append(f"{p.label}: no lastSeen timestamp")
+        elif p.age_hours < hours:
+            blocking.append(f"{p.label} seen {p.age_hours:.1f}h ago")
+            reasons.append(f"{p.label} last seen {p.age_hours:.1f}h ago (< {hours}h)")
 
-    # Need at least one known phone in inventory for phone criterion;
-    # if none ever matched, still require no online match on live list by pattern
-    live_names = [(c.get("name") or "") for c in live]
-    for name in live_names:
-        person = match_person(name)
-        if person:
-            # already handled via collect_phones
-            pass
-
-    motion_ok = (k_age is None or k_age >= hours) and (s_age is None or s_age >= hours)
-    phones_ok = not blocking
-    # Storage currently ON always blocks; kitchen stuck ON does not if no recent real motion
-    storage_live_block = s_state == "on"
-    kitchen_live_block = (
-        k_state == "on"
-        and k_last is not None
-        and (now_utc() - k_last).total_seconds() < 3600
-    )
-    vacant = motion_ok and phones_ok and not storage_live_block and not kitchen_live_block
-
+    vacant = len(blocking) == 0 and len(phones) == len(REQUIRED_PHONES)
     if vacant:
-        reasons = ["all signals quiet ≥ " + str(hours) + "h"]
+        reasons = [
+            f"S23 + Z2 Flip both offline ≥ {hours:.0f}h (Omada only; motion ignored)"
+        ]
+
+    by_id = {p.phone_id: p for p in phones}
+    s23 = by_id.get("jakub_s23")
+    z2 = by_id.get("sylwia_z2")
 
     return VacancyReport(
         vacant=vacant,
         vacant_hours_required=hours,
-        kitchen_state=k_state,
-        kitchen_last_on=k_last.isoformat() if k_last else None,
-        kitchen_age_h=round(k_age, 2) if k_age is not None else None,
-        storage_state=s_state,
-        storage_last_on=s_last.isoformat() if s_last else None,
-        storage_age_h=round(s_age, 2) if s_age is not None else None,
         phones=phone_dicts,
         phones_blocking=blocking,
         reasons=reasons,
         evaluated_at=now_utc().isoformat(),
+        s23_online=s23.online if s23 and s23.found else None,
+        s23_age_h=round(s23.age_hours, 2) if s23 and s23.age_hours is not None else None,
+        z2_online=z2.online if z2 and z2.found else None,
+        z2_age_h=round(z2.age_hours, 2) if z2 and z2.age_hours is not None else None,
     )
 
 
@@ -498,20 +431,22 @@ def push_vacancy_to_ha(report: VacancyReport) -> None:
         "friendly_name": "House vacant 24h",
         "device_class": "occupancy",
         "vacant_hours_required": report.vacant_hours_required,
-        "kitchen_state": report.kitchen_state,
-        "kitchen_last_on": report.kitchen_last_on,
-        "kitchen_age_h": report.kitchen_age_h,
-        "storage_state": report.storage_state,
-        "storage_last_on": report.storage_last_on,
-        "storage_age_h": report.storage_age_h,
+        "s23_online": report.s23_online,
+        "s23_age_h": report.s23_age_h,
+        "z2_online": report.z2_online,
+        "z2_age_h": report.z2_age_h,
         "phones": report.phones,
         "phones_blocking": report.phones_blocking,
         "reasons": report.reasons,
         "evaluated_at": report.evaluated_at,
+        "source": "omada_s23_z2_flip",
         "icon": "mdi:home-off" if report.vacant else "mdi:home-account",
     }
     ha_set_state(HA_SENSOR_VACANT, "on" if report.vacant else "off", attrs)
-    summary = "vacant" if report.vacant else ("blocked: " + "; ".join(report.reasons[:3]))
+    if report.vacant:
+        summary = "vacant (S23+Z2 Flip offline ≥24h)"
+    else:
+        summary = "home/active: " + "; ".join(report.reasons[:3])
     ha_set_state(
         HA_SENSOR_DETAIL,
         summary[:255],

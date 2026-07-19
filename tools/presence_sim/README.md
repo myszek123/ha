@@ -1,21 +1,24 @@
 # Presence simulation (deterministic)
 
-House is **vacant ≥ 24h** when:
+House is **vacant ≥ 24h** when **both** personal phones are offline on Omada:
 
-1. Kitchen occupancy not active and last ON ≥ 24h ago  
-2. Storage occupancy not active and last ON ≥ 24h ago  
-3. No Jakub/Sylwia phones on Omada (live), and lastSeen ≥ 24h  
+| Phone | Omada name match | Person |
+|-------|------------------|--------|
+| S23 | `S23` | Jakub |
+| Z2 Flip | `Z2 Flip` | Sylwia |
 
-Car is **ignored**.
+- Motion sensors **ignored** (false positives).
+- Company phones / other Omada clients **ignored**.
+- Car **ignored**.
 
-When vacant: turn **kitchen + salon** switches ON at 20:00 Warsaw, OFF at a random time in **22:30–23:30**.
+When vacant: turn **kitchen + salon** switches ON at **20:00** Warsaw, OFF at a random time in **22:30–23:30**.
 
-## Entities pushed to HA
+## HA entities
 
 | Entity | Meaning |
 |--------|---------|
-| `binary_sensor.house_vacant_24h` | `on` = vacant |
-| `sensor.house_vacancy_status` | short summary + attributes |
+| `binary_sensor.house_vacant_24h` | `on` = both phones offline ≥24h |
+| `sensor.house_vacancy_status` | short summary + attributes (`s23_*`, `z2_*`, `phones`) |
 
 ## Lights
 
@@ -27,17 +30,13 @@ When vacant: turn **kitchen + salon** switches ON at 20:00 Warsaw, OFF at a rand
 
 ```bash
 cd tools/presence_sim/docker
-# .env with OMADA_* + HA_*
 ./deploy.sh
 ```
 
-Cron (root on services):
+Cron:
 
 ```cron
 */15 * * * * /opt/services/presence-sim/run.sh
-*/15 19-23 * * * /opt/services/presence-sim/run-monitor.sh
-*/30 0 * * * /opt/services/presence-sim/run-monitor.sh
+*/15 19-23 * * * /opt/services/presence-sim/run-monitor-7d.sh
+*/30 0 * * * /opt/services/presence-sim/run-monitor-7d.sh
 ```
-
-Monitor log: `/var/log/presence-sim-monitor.log` + `/opt/services/presence-sim/data/monitor.jsonl`  
-Expire monitor after 7 days manually or leave (jsonl grows slowly).

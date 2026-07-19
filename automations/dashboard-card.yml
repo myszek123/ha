@@ -161,6 +161,61 @@ cards:
             entity_id: select.myszolot_charge_mode
             option: smart
 
+  # ── House vacancy / presence simulation (Omada S23 + Z2 Flip) ─────────────
+  - type: markdown
+    content: >
+      {% set v = states('binary_sensor.house_vacant_24h') %}
+
+      {% set status = states('sensor.house_vacancy_status') %}
+
+      {% set s23o = state_attr('binary_sensor.house_vacant_24h', 's23_online') %}
+
+      {% set s23a = state_attr('binary_sensor.house_vacant_24h', 's23_age_h') %}
+
+      {% set z2o = state_attr('binary_sensor.house_vacant_24h', 'z2_online') %}
+
+      {% set z2a = state_attr('binary_sensor.house_vacant_24h', 'z2_age_h') %}
+
+      ### Presence / vacant home
+
+
+      {% if v == 'on' %}
+
+      **House vacant ≥ 24h** — evening light simulation armed
+
+      {% elif v == 'off' %}
+
+      **Someone home / recent** — simulation idle
+
+      {% else %}
+
+      **Vacancy unknown** (sensor not updated yet)
+
+      {% endif %}
+
+
+      - Status: `{{ status }}`
+
+      - **S23** (Jakub): {% if s23o == true %}online{% elif s23o == false %}offline {{ s23a }}h{% else %}?{% endif %}
+
+      - **Z2 Flip** (Sylwia): {% if z2o == true %}online{% elif z2o == false %}offline {{ z2a }}h{% else %}?{% endif %}
+
+
+      _Omada only (no motion). When vacant: lights 20:00 on → off 22:30–23:30._
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: tile
+        entity: binary_sensor.house_vacant_24h
+        name: Vacant 24h
+        icon: mdi:home-off
+      - type: tile
+        entity: sensor.house_vacancy_status
+        name: Vacancy detail
+        icon: mdi:shield-home
+
   # ── Last complete drive week (Mon–Sun, from charge-log) ───────────────────
   - type: markdown
     content: >
