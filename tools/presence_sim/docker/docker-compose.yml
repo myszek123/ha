@@ -1,0 +1,16 @@
+# Presence simulation — services LXC CT 119
+# Cron: */15 * * * *  evaluate/run; monitor evenings for 7 days
+version: "3.3"
+services:
+  presence-sim:
+    image: presence-sim:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: "no"
