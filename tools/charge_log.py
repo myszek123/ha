@@ -700,35 +700,29 @@ def format_weekly_email(
     all_time_max: dict | None,
     sheet_url: str | None = None,
 ) -> tuple[str, str]:
+    del all_time_max  # kept for call-site compatibility; not used in body
     subject = (
         f"Myszolot week {week['week_start']} → {week['week_end']}: "
         f"{week['distance_km']} km"
     )
+    route = f"{week.get('max_speed_from') or ''} → {week.get('max_speed_to') or ''}".strip()
+    if route in ("→", ""):
+        route = "—"
+    rows = [
+        ("Drives", str(week["drives"])),
+        ("Drive hours", f"{week['hours']} h"),
+        ("Distance", f"{week['distance_km']} km"),
+        ("Energy used", f"{week['energy_kwh']} kWh"),
+        ("Max speed", f"{week['max_speed_kmh']} km/h"),
+        ("Max speed route", route),
+    ]
+    label_w = max(len(label) for label, _ in rows)
     lines = [
-        f"Weekly drive summary (Mon–Sun, Europe/Warsaw)",
+        "Weekly drive summary (Mon–Sun, Europe/Warsaw)",
         f"Week: {week['week_start']} → {week['week_end']}",
         "",
-        f"Drives:       {week['drives']}",
-        f"Drive hours:  {week['hours']} h",
-        f"Distance:     {week['distance_km']} km",
-        f"Energy used:  {week['energy_kwh']} kWh",
-        f"Max speed:    {week['max_speed_kmh']} km/h",
-        f"  when:       {week['max_speed_when']}",
-        f"  driver:     {week.get('max_speed_driver') or 'unknown'}",
-        f"  route:      {week['max_speed_from']} → {week['max_speed_to']}",
+        *[f"{label:<{label_w}} : {value}" for label, value in rows],
     ]
-    if all_time_max:
-        lines += [
-            "",
-            "All-time max speed (Tessie history):",
-            f"  {all_time_max.get('max_speed_kmh')} km/h on {all_time_max.get('start_local')}",
-            f"  driver: {all_time_max.get('driver') or 'unknown'}",
-            f"  {all_time_max.get('from')} → {all_time_max.get('to')}",
-            f"  distance {all_time_max.get('distance_km')} km, energy {all_time_max.get('energy_kwh')} kWh",
-            "",
-            "Note: Tessie usually does not report which car profile drove a trip;",
-            "driver stays 'unknown' unless the API/tag provides it.",
-        ]
     if sheet_url:
         lines += ["", f"Sheet: {sheet_url}"]
     return subject, "\n".join(lines) + "\n"
