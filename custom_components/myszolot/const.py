@@ -14,9 +14,12 @@ DEVICE_TRACKER = "device_tracker.myszolot_location"
 SENSOR_CHARGING = "sensor.myszolot_charging"
 NUMBER_CHARGE_CURRENT = "number.myszolot_charge_current"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
-# Override mode helpers (target SoC + deadline window)
+# Override mode helpers (target SoC + deadline window) — dashboard panel
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
 INPUT_NUMBER_DEADLINE_HOURS = "input_number.myszolot_deadline_hours"
+# Tunables as HA helpers (not on dashboard): change via Helpers / Dev Tools
+INPUT_NUMBER_MIN_SOC = "input_number.myszolot_min_soc"
+INPUT_NUMBER_MAX_PRICE_THRESHOLD = "input_number.myszolot_max_price_threshold"
 
 # Config keys
 CONF_CHARGER_PHASES = "charger_phases"

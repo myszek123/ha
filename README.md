@@ -69,6 +69,25 @@ How many hours from activation the override has to reach the target. Example: ne
 - When SoC reaches target **or** the deadline passes → mode returns to **smart**
 - You can always press **Smart (default)** to cancel early
 
+### Tunables (not on dashboard)
+
+These are normal HA helpers — change them under **Settings → Devices & Services → Helpers** or Dev Tools → States. Active values are also exposed on `sensor.myszolot_charge_reason` attributes (`min_soc`, `max_price_threshold`, `price_cap_active`).
+
+| Entity | Default | Role |
+|---|---|---|
+| `input_number.myszolot_min_soc` | 30 | Emergency floor: if SoC is below this and cable is in, charge immediately (all modes) |
+| `input_number.myszolot_max_price_threshold` | 1.0 PLN/kWh | **Smart only** hard-stop: skip hours above this price. **Override ignores it** (`price_cap_active: false`) |
+
+Suggested helper ranges when creating them:
+
+```yaml
+# Settings → Helpers → Create Number
+# myszolot_min_soc: min 0, max 100, step 1, unit %, initial 30
+# myszolot_max_price_threshold: min 0, max 5, step 0.05, unit PLN/kWh, initial 1.0
+```
+
+If a helper is missing, the integration falls back to the config-entry values below.
+
 ## Configuration
 
 ### Config Entry Options
@@ -80,9 +99,9 @@ How many hours from activation the override has to reach the target. Example: ne
 | `fast_amps` | 12 A | Fallback charging current if Tessie amps unavailable |
 | `battery_capacity_kWh` | 68.9 | Total usable battery capacity |
 | `default_target_soc` | 80% | Smart mode daily target |
-| `min_soc` | 30% | Emergency charge floor |
+| `min_soc` | 30% | Fallback emergency floor if `input_number.myszolot_min_soc` missing |
 | `charge_start_soc` | 69% | Smart: do not **start** a new plan if SoC already above this |
-| `max_price_threshold` | 1.0 PLN/kWh | Smart: skip hours above this price |
+| `max_price_threshold` | 1.0 PLN/kWh | Fallback smart price cap if helper missing |
 | `smart_deadline_hours` | 48 h | Smart: planning horizon for cheapest hours |
 
 **Derived at runtime:**
@@ -98,8 +117,8 @@ max_charge_rate_kW = charge_amps × voltage × charger_phases / 1000
 
 | Mode | Target SoC | Price hard-stop | SoC debounce | Scheduling |
 |---|---|---|---|---|
-| `smart` | 80% (config) | Yes (`max_price_threshold`) | Yes (`charge_start_soc`) | Cheapest hours in smart horizon (48h) |
-| `override` | Helper target % | **No** | **No** | Cheapest hours within locked deadline |
+| `smart` | 80% (config) | Yes (`input_number.myszolot_max_price_threshold`) | Yes (`charge_start_soc`) | Cheapest hours in smart horizon (48h) |
+| `override` | Helper target % | **No** (price cap ignored) | **No** | Cheapest hours within locked deadline |
 
 Override auto-resets to `smart` when target is reached or the deadline ends.
 
@@ -145,8 +164,10 @@ Override auto-resets to `smart` when target is reached or the deadline ends.
 | `device_tracker.myszolot_location` | Car location |
 | `sensor.myszolot_charging` | External charging status |
 | `input_boolean.myszolot_location_override` | Optional force-home |
-| `input_number.myszolot_custom_target_soc` | Override target % |
-| `input_number.myszolot_deadline_hours` | Override window (hours) |
+| `input_number.myszolot_custom_target_soc` | Override target % (dashboard) |
+| `input_number.myszolot_deadline_hours` | Override window (hours, dashboard) |
+| `input_number.myszolot_min_soc` | Emergency min SoC (not on panel) |
+| `input_number.myszolot_max_price_threshold` | Smart max price PLN/kWh (not on panel) |
 
 ## External Entities (Write)
 

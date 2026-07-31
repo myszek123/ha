@@ -23,7 +23,8 @@ from .const import (
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
-    INPUT_NUMBER_DEADLINE_HOURS,
+    INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_MIN_SOC,
+    INPUT_NUMBER_MAX_PRICE_THRESHOLD,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
     REASON_MIN_SOC_FLOOR, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
@@ -422,6 +423,15 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             return default
 
+    def _read_helper_float(self, entity_id: str, default: float) -> float:
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in _UNAVAILABLE:
+            return default
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return default
+
     def set_mode(self, mode: str) -> None:
         """Select smart (default) or override (locked target + deadline)."""
         if mode not in (MODE_SMART, MODE_OVERRIDE):
@@ -472,6 +482,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             NUMBER_CHARGE_CURRENT,
             INPUT_NUMBER_CUSTOM_TARGET_SOC,
             INPUT_NUMBER_DEADLINE_HOURS,
+            INPUT_NUMBER_MIN_SOC,
+            INPUT_NUMBER_MAX_PRICE_THRESHOLD,
         ]
 
         @callback
@@ -495,9 +507,16 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         fast_amps: int = cfg.get(CONF_FAST_AMPS, DEFAULT_FAST_AMPS)
         battery_kWh: float = cfg.get(CONF_BATTERY_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)
         default_target_soc: int = cfg.get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC)
-        min_soc: int = cfg.get(CONF_MIN_SOC, DEFAULT_MIN_SOC)
+        # Prefer HA helpers (tunable without reconfig); fall back to config entry
+        min_soc_default = int(cfg.get(CONF_MIN_SOC, DEFAULT_MIN_SOC))
+        min_soc: int = max(0, min(100, self._read_helper_int(
+            INPUT_NUMBER_MIN_SOC, min_soc_default
+        )))
         charge_start_soc: int = cfg.get(CONF_CHARGE_START_SOC, DEFAULT_CHARGE_START_SOC)
-        max_price_threshold: float = cfg.get(CONF_MAX_PRICE_THRESHOLD, DEFAULT_MAX_PRICE_THRESHOLD)
+        max_price_default = float(cfg.get(CONF_MAX_PRICE_THRESHOLD, DEFAULT_MAX_PRICE_THRESHOLD))
+        max_price_threshold: float = max(0.0, self._read_helper_float(
+            INPUT_NUMBER_MAX_PRICE_THRESHOLD, max_price_default
+        ))
         smart_deadline_hours: int = cfg.get(
             CONF_SMART_DEADLINE_HOURS, DEFAULT_SMART_DEADLINE_HOURS
         )
@@ -677,6 +696,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "current_price": current_price,
             "current_soc": current_soc,
             "target_soc": target_soc,
+            "min_soc": min_soc,
+            "max_price_threshold": max_price_threshold,
+            "price_cap_active": use_price_cap,
             "deadline_hours": deadline_hours,
             "override_deadline": self._override_deadline,
             "override_remaining_minutes": override_remaining_min,

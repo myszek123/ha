@@ -1,0 +1,28 @@
+# Optional HA helpers for Myszolot tunables (NOT on the dashboard card).
+# Create once via UI (Settings → Devices & Services → Helpers) or paste into
+# configuration.yaml under input_number: then restart HA.
+#
+# After create, reload Myszolot (or restart HA). Values appear on
+# sensor.myszolot_charge_reason attributes: min_soc, max_price_threshold, price_cap_active.
+#
+# Behaviour:
+#   min_soc — emergency floor in all modes when cable is in
+#   max_price_threshold — smart mode only; override ignores the price cap
+
+# input_number:
+#   myszolot_min_soc:
+#     name: Myszolot min SoC (emergency)
+#     min: 0
+#     max: 100
+#     step: 1
+#     unit_of_measurement: "%"
+#     mode: box
+#     initial: 30
+#   myszolot_max_price_threshold:
+#     name: Myszolot max price (smart)
+#     min: 0
+#     max: 5
+#     step: 0.05
+#     unit_of_measurement: "PLN/kWh"
+#     mode: box
+#     initial: 1.0

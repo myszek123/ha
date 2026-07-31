@@ -119,6 +119,17 @@ def _make_ha_mocks() -> dict:
     helpers_mock.event = event_mock
     helpers_mock.entity = entity_mock
     helpers_mock.entity_platform = entity_platform_mock
+    helpers_typing_mock = MagicMock()
+    helpers_typing_mock.ConfigType = dict
+    helpers_mock.typing = helpers_typing_mock
+    config_validation_mock = MagicMock()
+    config_validation_mock.config_entry_only_config_schema = lambda domain: MagicMock()
+    helpers_mock.config_validation = config_validation_mock
+    helpers_dispatcher_mock = MagicMock()
+    helpers_mock.dispatcher = helpers_dispatcher_mock
+    helpers_storage_mock = MagicMock()
+    helpers_storage_mock.Store = MagicMock
+    helpers_mock.storage = helpers_storage_mock
 
     config_entries_mock = MagicMock()
     config_entries_mock.ConfigFlow = _ConfigFlow
@@ -141,6 +152,10 @@ def _make_ha_mocks() -> dict:
 
     const_mock = MagicMock()
 
+    util_dt_mock = MagicMock()
+    util_mock = MagicMock()
+    util_mock.dt = util_dt_mock
+
     # Top-level mock: set submodule attributes explicitly so that
     # `from homeassistant import X` returns our stub, not an auto-child mock.
     ha_mock = MagicMock()
@@ -149,6 +164,7 @@ def _make_ha_mocks() -> dict:
     ha_mock.components = components_mock
     ha_mock.config_entries = config_entries_mock
     ha_mock.const = const_mock
+    ha_mock.util = util_mock
 
     return {
         "homeassistant": ha_mock,
@@ -158,12 +174,18 @@ def _make_ha_mocks() -> dict:
         "homeassistant.helpers.event": event_mock,
         "homeassistant.helpers.entity": entity_mock,
         "homeassistant.helpers.entity_platform": entity_platform_mock,
+        "homeassistant.helpers.typing": helpers_typing_mock,
+        "homeassistant.helpers.config_validation": config_validation_mock,
+        "homeassistant.helpers.dispatcher": helpers_dispatcher_mock,
+        "homeassistant.helpers.storage": helpers_storage_mock,
         "homeassistant.components": components_mock,
         "homeassistant.components.select": select_mock,
         "homeassistant.components.sensor": sensor_mock,
         "homeassistant.components.binary_sensor": binary_sensor_mock,
         "homeassistant.config_entries": config_entries_mock,
         "homeassistant.const": const_mock,
+        "homeassistant.util": util_mock,
+        "homeassistant.util.dt": util_dt_mock,
     }
 
 

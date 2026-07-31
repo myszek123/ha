@@ -1,12 +1,11 @@
 alias: Tesla Charging - Main Automation
 description: >
-  Reads should_charge / target_amps from sensor.myszolot_charge_reason (produced
-  by the myszolot custom integration) and drives the physical charger entities.
-  Also manages shared-circuit sockets to prevent overload during charging.
-  Stopping is never gated by garage vision — only starting requires car present.
-  To protect additional sockets/devices, add their entity_ids to both socket lists below.
-  Replaces the old G12/price-threshold/override logic — all scheduling decisions
-  now live in the integration coordinator.
+  Reads should_charge / target_amps from sensor.myszolot_charge_reason and drives
+  home charging. Home power is gated only on the Autel (charge_control + max current,
+  hard cap 12 A). The Tesla charge switch is never turned off — only turned on when
+  a session should start (car must request charge). Stop/away only disable Autel so
+  public/supercharger sessions are never interrupted. Presence = garage vision + GPS
+  not contradicting. State-guarded. Scheduling lives in the myszolot coordinator.
 triggers:
   - entity_id: sensor.myszolot_charge_reason
     trigger: state
@@ -14,32 +13,50 @@ triggers:
     trigger: time_pattern
 actions:
   - choose:
+      # Stop: Autel off only — never touch car charge switch
       - conditions:
           - condition: template
             value_template: >-
               {{ state_attr('sensor.myszolot_charge_reason', 'should_charge') in [false, 0, 'false', 'False', 'off', 'no', none]
                  or (state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0)) <= 0 }}
         sequence:
-          - action: switch.turn_off
-            target:
-              entity_id: switch.myszolot_charge
-          - action: switch.turn_on
-            target:
-              entity_id:
-                - switch.garage240socket
+          - if:
+              - condition: state
+                entity_id: switch.autel_charge_control
+                state: "on"
+            then:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.autel_charge_control
+          - if:
+              - condition: template
+                value_template: "{{ not is_state('switch.garage240socket', 'on') }}"
+            then:
+              - action: switch.turn_on
+                target:
+                  entity_id:
+                    - switch.garage240socket
+      # Start: Autel on + amps + car charge on (home only for car writes)
       - conditions:
           - condition: template
             value_template: >-
               {{ state_attr('sensor.myszolot_charge_reason', 'should_charge') in [true, 1, 'true', 'True', 'on', 'yes']
                  and (state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0)) > 0
-                 and (is_state('binary_sensor.garage_car_present', 'on')
+                 and ((is_state('binary_sensor.garage_car_present', 'on')
+                       and (states('device_tracker.myszolot_location') in ['home', 'unknown', 'unavailable']
+                            or is_state('input_boolean.myszolot_location_override', 'on')))
                       or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
-                          and is_state('device_tracker.myszolot_location', 'home'))) }}
+                          and (is_state('device_tracker.myszolot_location', 'home')
+                               or is_state('input_boolean.myszolot_location_override', 'on')))) }}
         sequence:
-          - action: switch.turn_off
-            target:
-              entity_id:
-                - switch.garage240socket
+          - if:
+              - condition: template
+                value_template: "{{ not is_state('switch.garage240socket', 'off') }}"
+            then:
+              - action: switch.turn_off
+                target:
+                  entity_id:
+                    - switch.garage240socket
           - if:
               - condition: template
                 value_template: "{{ not is_state('switch.autel_charge_control', 'on') }}"
@@ -47,26 +64,63 @@ actions:
               - action: switch.turn_on
                 target:
                   entity_id: switch.autel_charge_control
-          - action: number.set_value
-            target:
-              entity_id: number.myszolot_charge_current
-            data:
-              value: "{{ state_attr('sensor.myszolot_charge_reason', 'target_amps') | int }}"
-          - action: switch.turn_on
-            target:
-              entity_id: switch.myszolot_charge
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ (states('number.autel_maximum_current') | int(-1))
+                     != ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 12] | min) }}
+            then:
+              - action: number.set_value
+                target:
+                  entity_id: number.autel_maximum_current
+                data:
+                  value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 12] | min }}"
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ is_state('device_tracker.myszolot_location', 'home')
+                     and (states('number.myszolot_charge_current') | int(0))
+                     < ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 12] | min) }}
+            then:
+              - action: number.set_value
+                target:
+                  entity_id: number.myszolot_charge_current
+                data:
+                  value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 12] | min }}"
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ is_state('device_tracker.myszolot_location', 'home')
+                     and not is_state('switch.myszolot_charge', 'on') }}
+            then:
+              - action: switch.turn_on
+                target:
+                  entity_id: switch.myszolot_charge
+      # Car away: lock Autel only
       - conditions:
           - condition: template
             value_template: >-
-              {{ not (is_state('binary_sensor.garage_car_present', 'on')
+              {{ not ((is_state('binary_sensor.garage_car_present', 'on')
+                       and (states('device_tracker.myszolot_location') in ['home', 'unknown', 'unavailable']
+                            or is_state('input_boolean.myszolot_location_override', 'on')))
                       or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
-                          and is_state('device_tracker.myszolot_location', 'home'))) }}
+                          and (is_state('device_tracker.myszolot_location', 'home')
+                               or is_state('input_boolean.myszolot_location_override', 'on')))) }}
         sequence:
-          - action: switch.turn_off
-            target:
-              entity_id: switch.myszolot_charge
-          - action: switch.turn_on
-            target:
-              entity_id:
-                - switch.garage240socket
+          - if:
+              - condition: state
+                entity_id: switch.autel_charge_control
+                state: "on"
+            then:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.autel_charge_control
+          - if:
+              - condition: template
+                value_template: "{{ not is_state('switch.garage240socket', 'on') }}"
+            then:
+              - action: switch.turn_on
+                target:
+                  entity_id:
+                    - switch.garage240socket
 mode: single

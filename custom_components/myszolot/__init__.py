@@ -11,6 +11,8 @@ from .const import (
     INPUT_BOOLEAN_LOCATION_OVERRIDE,
     INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS,
+    INPUT_NUMBER_MIN_SOC,
+    INPUT_NUMBER_MAX_PRICE_THRESHOLD,
 )
 from .coordinator import MyszolotCoordinator
 from .weekly_drive import async_setup_weekly_drive
@@ -19,6 +21,11 @@ _OPTIONAL_HELPERS = {
     INPUT_BOOLEAN_LOCATION_OVERRIDE: "Toggle (on/off) — enables location override feature",
     INPUT_NUMBER_CUSTOM_TARGET_SOC: "Number (50–100, step 1) — override target SoC %",
     INPUT_NUMBER_DEADLINE_HOURS: "Number (1–48, step 1) — override window in hours (default 24)",
+    INPUT_NUMBER_MIN_SOC: "Number (0–100, step 1) — emergency min SoC floor (default 30); not on dashboard",
+    INPUT_NUMBER_MAX_PRICE_THRESHOLD: (
+        "Number (PLN/kWh, step 0.05) — smart-mode max price hard-stop (default 1.0); "
+        "ignored in override; not on dashboard"
+    ),
 }
 
 PLATFORMS = ["select", "sensor", "binary_sensor"]
