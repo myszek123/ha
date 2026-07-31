@@ -22,6 +22,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
+    DEFAULT_MIN_FLAT_AMPS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_MIN_SOC,
     INPUT_NUMBER_MAX_PRICE_THRESHOLD,
@@ -195,10 +196,127 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
                 "slots": group,
                 "total_kWh": round(sum(s["kWh"] for s in group), 4),
                 "total_cost": round(sum(s["cost"] for s in group), 4),
+                "amps": None,  # filled by flatten_sessions
+                "flattened": False,
             }
         )
 
     return sessions
+
+
+def flatten_sessions(
+    sessions: list[dict],
+    charge_amps: int,
+    now_dt: datetime,
+    min_flat_amps: int = DEFAULT_MIN_FLAT_AMPS,
+) -> list[dict]:
+    """
+    Second pass: lower continuous amps inside already-selected hours.
+
+    Pass 1 (build_schedule + compute_sessions) packs energy at full rate into
+    the cheapest hours. Pass 2 expands each continuous group to the full
+    span of those hours (hour boundaries) and drops amps so the same kWh is
+    delivered over the longer window — no new hours ⇒ no spill into more
+    expensive slots.
+
+    Emergency / min-SoC paths never use sessions, so they stay at full amps.
+    """
+    if charge_amps <= 0 or not sessions:
+        return sessions
+
+    min_a = max(1, min(int(min_flat_amps), int(charge_amps)))
+    out: list[dict] = []
+
+    for sess in sessions:
+        slots = sess.get("slots") or []
+        if not slots:
+            s = dict(sess)
+            s["amps"] = charge_amps
+            s["flattened"] = False
+            out.append(s)
+            continue
+
+        first_hour = int(slots[0]["hour"])
+        last_hour = int(slots[-1]["hour"])
+        # Full hour-boundary window of hours already chosen by the knapsack
+        first_hour_start = sess["start"].replace(minute=0, second=0, microsecond=0)
+        window_start = first_hour_start
+        window_end = first_hour_start + timedelta(hours=(last_hour - first_hour + 1))
+
+        ws = window_start
+        if now_dt > ws:
+            ws = now_dt.replace(second=0, microsecond=0)
+        if ws >= window_end:
+            s = dict(sess)
+            s["amps"] = charge_amps
+            s["flattened"] = False
+            out.append(s)
+            continue
+
+        need_minutes = float(sum(int(sl["minutes"]) for sl in slots))
+        avail_minutes = (window_end - ws).total_seconds() / 60.0
+        if avail_minutes <= 0:
+            s = dict(sess)
+            s["amps"] = charge_amps
+            s["flattened"] = False
+            out.append(s)
+            continue
+
+        # No slack in selected hours → keep packed full-rate session
+        if avail_minutes <= need_minutes + 0.5:
+            s = dict(sess)
+            # Keep original packed start/end from compute_sessions
+            s["amps"] = charge_amps
+            s["flattened"] = False
+            out.append(s)
+            continue
+
+        raw_amps = charge_amps * need_minutes / avail_minutes
+        flat_amps = int(raw_amps)  # floor: never exceed planned energy rate
+
+        if flat_amps < min_a:
+            # Do not go below min_a: shorter block inside the window at min_a
+            flat_amps = min_a
+            duration = need_minutes * charge_amps / flat_amps
+            if duration >= avail_minutes - 0.5:
+                # Even min_a needs the whole window (or more) — fill window
+                flat_amps = max(
+                    min_a,
+                    min(charge_amps, int(charge_amps * need_minutes / avail_minutes) or min_a),
+                )
+                start, end = ws, window_end
+            else:
+                start = ws
+                end = ws + timedelta(minutes=duration)
+        elif flat_amps >= charge_amps:
+            s = dict(sess)
+            s["amps"] = charge_amps
+            s["flattened"] = False
+            out.append(s)
+            continue
+        else:
+            start, end = ws, window_end
+
+        flat_amps = max(min_a, min(charge_amps, int(flat_amps)))
+        s = dict(sess)
+        s["start"] = start
+        s["end"] = end
+        s["amps"] = flat_amps
+        s["flattened"] = flat_amps < charge_amps
+        out.append(s)
+
+    return out
+
+
+def session_target_amps(sessions: list[dict], now_dt: datetime, default_amps: int) -> int:
+    """Amps for the active session, or default_amps if none active."""
+    for s in sessions:
+        if s["start"] <= now_dt < s["end"]:
+            a = s.get("amps")
+            if a is not None and int(a) > 0:
+                return int(a)
+            return default_amps
+    return default_amps
 
 
 def is_in_session(sessions: list[dict], now_dt: datetime) -> bool:
@@ -318,7 +436,9 @@ def determine_reason(
         if schedule_all_prices_above_max:
             return REASON_PRICE_TOO_HIGH, False, 0
         if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, charge_amps
+            return REASON_SCHEDULED, True, session_target_amps(
+                sessions, now_dt, charge_amps
+            )
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
@@ -329,7 +449,9 @@ def determine_reason(
     # 5. Override — reach target within deadline; no price hard-stop, no SoC debounce
     if mode == MODE_OVERRIDE:
         if is_in_session(sessions, now_dt):
-            return REASON_SCHEDULED, True, charge_amps
+            return REASON_SCHEDULED, True, session_target_amps(
+                sessions, now_dt, charge_amps
+            )
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
@@ -632,7 +754,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             # Override always uses uncapped (cheapest hours regardless of price).
             # Smart uses price cap when hours are affordable.
             plan = uncapped if not use_price_cap else capped
+            # Pass 1: pack at full rate into cheapest hours
             sessions = compute_sessions(plan, now.date())
+            # Pass 2: flatten amps across the selected hour span (no new hours)
+            sessions = flatten_sessions(sessions, charge_amps, now)
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,

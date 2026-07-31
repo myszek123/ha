@@ -8,8 +8,10 @@ import pytest
 from custom_components.myszolot.coordinator import (
     build_schedule,
     compute_sessions,
+    flatten_sessions,
     is_in_session,
     next_session,
+    session_target_amps,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -320,3 +322,61 @@ def test_next_session_none_when_all_past():
 
 def test_next_session_empty():
     assert next_session([], datetime(2024, 1, 15, 10, 0)) is None
+
+
+# ── flatten_sessions ──────────────────────────────────────────────────────────
+
+def test_flatten_expands_partial_into_full_hour_span():
+    """
+    12 kWh @ 10 kWh/h max → 72 min at full rate in hours 13–14.
+    Flatten before the window: use 13:00–15:00 (120 min) → amps scale 12 * 72/120 = 7.2 → 7A.
+    """
+    schedule = [
+        {"hour": 13, "minutes": 12, "kWh": 2.0, "cost": 1.0, "full": False},
+        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 2.5, "full": True},
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    now = datetime(2024, 1, 15, 10, 0)  # before window
+    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
+    assert len(flat) == 1
+    s = flat[0]
+    assert s["flattened"] is True
+    assert s["start"] == datetime(2024, 1, 15, 13, 0)
+    assert s["end"] == datetime(2024, 1, 15, 15, 0)
+    assert s["amps"] == 7  # int(12 * 72/120)
+    assert session_target_amps(flat, datetime(2024, 1, 15, 13, 30), 12) == 7
+    assert session_target_amps(flat, datetime(2024, 1, 15, 10, 0), 12) == 12
+
+
+def test_flatten_no_slack_keeps_full_rate():
+    """Two full hours at full rate → no slack → stay packed at charge_amps."""
+    schedule = [
+        {"hour": 13, "minutes": 60, "kWh": 10.0, "cost": 5.0, "full": True},
+        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 4.0, "full": True},
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    now = datetime(2024, 1, 15, 10, 0)
+    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
+    assert len(flat) == 1
+    s = flat[0]
+    assert s["flattened"] is False
+    assert s["amps"] == 12
+    assert s["start"] == datetime(2024, 1, 15, 13, 0)
+    assert s["end"] == datetime(2024, 1, 15, 15, 0)
+
+
+def test_flatten_respects_min_flat_amps():
+    """Tiny energy in a 2h window would want very low A → clamp to min_flat_amps."""
+    schedule = [
+        {"hour": 13, "minutes": 6, "kWh": 1.0, "cost": 0.5, "full": False},
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    # packed: 13:54–14:00 (6 min)
+    now = datetime(2024, 1, 15, 10, 0)
+    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
+    s = flat[0]
+    assert s["amps"] >= 6
+    assert s["amps"] <= 12
+    # Window is hour 13 only (60 min); 6 min need → raw 1.2A → min 6A shorter block
+    assert s["end"] <= datetime(2024, 1, 15, 14, 0)
+    assert (s["end"] - s["start"]).total_seconds() / 60 <= 60

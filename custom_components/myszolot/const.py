@@ -43,6 +43,8 @@ DEFAULT_CHARGE_START_SOC = 69
 DEFAULT_MAX_PRICE_THRESHOLD = 1.0
 DEFAULT_SMART_DEADLINE_HOURS = 48
 DEFAULT_OVERRIDE_DEADLINE_HOURS = 24
+# Floor when flattening amps inside selected cheap hours (still ≤ charge_amps)
+DEFAULT_MIN_FLAT_AMPS = 6
 
 # Charge modes — only daily smart + temporary override
 MODE_SMART = "smart"
