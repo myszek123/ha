@@ -1,0 +1,99 @@
+# Homelab scheduled jobs overview (CT 119 services)
+# Paste as Manual card on InternalLinks / Overview.
+# Live status requires services_status job (sensor.homelab_services_jobs).
+# Until that runs, the static section still lists everything with docs links.
+type: vertical-stack
+cards:
+  - type: markdown
+    content: >
+      ### Homelab jobs (CT 119 · services)
+
+
+      {% set s = 'sensor.homelab_services_jobs' %}
+
+      {% if states(s) not in ['unknown', 'unavailable', ''] %}
+
+      **Fleet:** `{{ states(s) }}` · updated
+      `{{ state_attr(s, 'updated') }}`
+
+
+      {{ state_attr(s, 'summary_md') }}
+
+
+      _Source: `/opt/services` ·
+      [SERVICES.md](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/SERVICES.md)_
+
+      {% else %}
+
+      **Live status not published yet** (run `services-status` on CT 119).
+
+
+      Static inventory:
+
+
+      | Job | Cron | Doc |
+
+      |-----|------|-----|
+
+      | Charge log | daily 06:15 | [CHARGE-LOG](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/CHARGE-LOG.md) |
+
+      | Wspólne remind | 08:00 + 18:00 | [WSPOLNE](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/WSPOLNE-REMIND.md) |
+
+      | Presence sim | every 15 min | [PRESENCE](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/PRESENCE-SIM.md) |
+
+      | 4Parents export | 2nd 07:15 | [4PARENTS](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/4PARENTS-EXPORT.md) |
+
+      | Monthly bills (EON+ekartoteka) | 1st 06:00 *on p330* | [SERVICES](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/SERVICES.md) |
+
+
+      {% endif %}
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: tile
+        entity: sensor.homelab_job_charge_log
+        name: Charge log
+        icon: mdi:ev-station
+      - type: tile
+        entity: sensor.homelab_job_wspolne_remind
+        name: Wspólne
+        icon: mdi:bank
+      - type: tile
+        entity: sensor.homelab_job_presence_sim
+        name: Presence sim
+        icon: mdi:home-account
+      - type: tile
+        entity: sensor.homelab_job_fourparents_export
+        name: 4Parents
+        icon: mdi:baby-face-outline
+      - type: tile
+        entity: sensor.homelab_job_monthly_bills
+        name: Monthly bills
+        icon: mdi:file-document
+      - type: tile
+        entity: sensor.homelab_services_jobs
+        name: Jobs fleet
+        icon: mdi:server-network
+
+  - type: markdown
+    content: >
+      ### Links
+
+
+      - [Services docs index](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/SERVICES.md)
+
+      - [Netdata (fleet CPU)](https://monitor.myszki.net.pl/)
+
+      - [Charge sheet](https://docs.google.com/spreadsheets/d/1Lwcs8wxJsSVpDWPbEkMqeBbBRCHI51DQARYMcVXiwQQ)
+
+      - [4Parents / Tomek sheet](https://docs.google.com/spreadsheets/d/1HJo3MG3kdpndtoGn6PKoNdrmpcpQMMmZLG13D9FFoAc)
+
+      - [Assistant OpenClaw](https://assistant.myszki.net.pl/) 🤖
+
+
+      **States:** `ok` · `stale` (missed expected window) · `fail` · `missing`
+
+
+      Presence vacancy tiles stay under **Myszolot** (house vacant sensors).

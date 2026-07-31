@@ -1,0 +1,15 @@
+# Services job status → HA sensors (CT 119)
+# Cron: */30 * * * * /opt/services/services-status/run.sh
+version: "3.3"
+services:
+  services-status:
+    image: services-status:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - /opt/services:/opt/services:ro
+      - /var/log:/var/log:ro
+    restart: "no"
