@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.myszolot.coordinator import (
     build_schedule,
+    build_asap_schedule,
     compute_sessions,
     flatten_sessions,
     is_in_session,
@@ -380,3 +381,21 @@ def test_flatten_respects_min_flat_amps():
     # Window is hour 13 only (60 min); 6 min need → raw 1.2A → min 6A shorter block
     assert s["end"] <= datetime(2024, 1, 15, 14, 0)
     assert (s["end"] - s["start"]).total_seconds() / 60 <= 60
+
+
+# ── build_asap_schedule ───────────────────────────────────────────────────────
+
+def test_asap_starts_now_not_later_hour():
+    """Override ASAP: continuous from 12:12, does not wait for hour 13."""
+    now = datetime(2024, 1, 15, 12, 12, 0)
+    # 10 kWh/h, need 15 kWh → 90 min → spans 12:12–13:42
+    plan = build_asap_schedule(15.0, MAX_KWH, now, deadline_hours=2)
+    assert plan
+    assert plan[0]["hour"] == 12
+    assert plan[0]["minutes"] == 48  # rest of hour 12
+    sessions = compute_sessions(plan, TODAY)
+    assert len(sessions) == 1
+    assert sessions[0]["start"] == datetime(2024, 1, 15, 12, 12)
+    assert is_in_session(sessions, now) is True
+    # Must not be waiting for a later session only
+    assert next_session(sessions, now) is None

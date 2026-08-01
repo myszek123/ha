@@ -117,6 +117,64 @@ def build_schedule(
     return sorted(schedule, key=lambda s: s["hour"])
 
 
+def build_asap_schedule(
+    E_needed: float,
+    max_kWh_per_hour: float,
+    now_dt: datetime,
+    deadline_hours: int,
+    all_prices: list[dict] | None = None,
+) -> list[dict]:
+    """
+    Continuous charge from *now* for E_needed (override / urgency).
+
+    Does not skip to later cheaper hours — that caused sessions to stop at
+    hour boundaries when the knapsack re-picked a later slot.
+    """
+    if E_needed <= 0 or max_kWh_per_hour <= 0 or deadline_hours <= 0:
+        return []
+
+    price_by_hour = _price_map(all_prices)
+    deadline_end = now_dt + timedelta(hours=deadline_hours)
+    max_minutes = max(1, int((deadline_end - now_dt).total_seconds() / 60.0))
+    need_minutes = max(1, int(E_needed / max_kWh_per_hour * 60.0 + 0.999))  # ceil
+    total_minutes = min(need_minutes, max_minutes)
+
+    midnight = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    schedule: list[dict] = []
+    remaining = float(total_minutes)
+    cur = now_dt.replace(second=0, microsecond=0)
+    first = True
+
+    while remaining > 0.5:
+        if first:
+            minutes_left = 60 - cur.minute
+            if minutes_left <= 0:
+                cur = cur.replace(minute=0) + timedelta(hours=1)
+                minutes_left = 60
+            alloc_m = min(remaining, minutes_left)
+            first = False
+        else:
+            alloc_m = min(remaining, 60.0)
+
+        hour_start = cur.replace(minute=0, second=0, microsecond=0)
+        h_idx = int((hour_start - midnight).total_seconds() // 3600)
+        price = float(price_by_hour.get(h_idx, 0.0))
+        kwh = max_kWh_per_hour * alloc_m / 60.0
+        schedule.append(
+            {
+                "hour": h_idx,
+                "minutes": int(alloc_m),
+                "kWh": kwh,
+                "cost": round(kwh * price, 4),
+                "full": alloc_m >= 59.5,
+            }
+        )
+        remaining -= alloc_m
+        cur = hour_start + timedelta(hours=1)
+
+    return schedule
+
+
 def max_energy_in_window(
     all_prices: list[dict],
     max_kWh_per_hour: float,
@@ -647,7 +705,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         tesla_current_state = self.hass.states.get(NUMBER_CHARGE_CURRENT)
         tesla_amps_raw = _parse_float(tesla_current_state)
-        charge_amps: int = int(tesla_amps_raw) if tesla_amps_raw and tesla_amps_raw > 0 else fast_amps
+        # Never plan below fast_amps — car entity often stuck at 5 A and collapsed
+        # the whole schedule/flatten to a crawl (and false unfeasible targets).
+        if tesla_amps_raw and tesla_amps_raw > 0:
+            charge_amps = max(int(tesla_amps_raw), int(fast_amps))
+        else:
+            charge_amps = int(fast_amps)
         max_charge_rate_kW: float = charge_amps * voltage * charger_phases / 1000
 
         now = datetime.now()
@@ -751,10 +814,20 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             if use_price_cap and not capped and uncapped:
                 schedule_all_prices_above_max = True
 
-            # Override always uses uncapped (cheapest hours regardless of price).
-            # Smart uses price cap when hours are affordable.
-            plan = uncapped if not use_price_cap else capped
-            # Pass 1: pack at full rate into cheapest hours
+            if mode == MODE_OVERRIDE:
+                # Override = urgency: charge continuously from *now* (no wait for
+                # a later cheaper hour). Then flatten inside that span only.
+                plan = build_asap_schedule(
+                    E_needed,
+                    max_charge_rate_kW,
+                    now,
+                    deadline_hours,
+                    all_prices,
+                )
+            else:
+                # Smart: cheapest hours under price cap
+                plan = capped if use_price_cap else uncapped
+            # Pass 1: sessions at full rate from the plan slots
             sessions = compute_sessions(plan, now.date())
             # Pass 2: flatten amps across the selected hour span (no new hours)
             sessions = flatten_sessions(sessions, charge_amps, now)
