@@ -485,20 +485,45 @@ def test_set_mode_smart_clears_override_state():
     assert coord._override_target_soc is None
 
 
-def test_deadline_minutes_preferred_over_hours():
+def test_deadline_hours_is_ui_source_not_minutes():
+    """Dashboard uses hours; minutes helper must not override when hours exist."""
     hass = _fake_hass_with_helpers(target=90, hours=5, minutes=90)
     coord = _make_coord(hass, _FakeStore())
-    assert coord._read_deadline_minutes() == 90  # not 5*60
+    assert coord._read_deadline_minutes() == 5 * 60  # not 90
 
 
-def test_deadline_hours_fallback_when_no_minutes_helper():
+def test_deadline_hours_when_no_minutes_helper():
     hass = _fake_hass_with_helpers(target=90, hours=3, minutes=None)
     coord = _make_coord(hass, _FakeStore())
     assert coord._read_deadline_minutes() == 180
 
 
-def test_deadline_minutes_clamped():
-    hass = _fake_hass_with_helpers(target=90, hours=1, minutes=99999)
+def test_deadline_minutes_fallback_when_no_hours_helper():
+    hass = MagicMock()
+    hass.states.get = lambda eid: {
+        INPUT_NUMBER_CUSTOM_TARGET_SOC: SimpleNamespace(state="90", attributes={}),
+        INPUT_NUMBER_DEADLINE_MINUTES: SimpleNamespace(state="90", attributes={}),
+    }.get(eid)
+    import asyncio
+
+    def _create_task(coro):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        return asyncio.ensure_future(coro)
+
+    hass.async_create_task = _create_task
+    coord = _make_coord(hass, _FakeStore())
+    assert coord._read_deadline_minutes() == 90
+
+
+def test_deadline_hours_clamped():
+    hass = _fake_hass_with_helpers(target=90, hours=999, minutes=None)
     coord = _make_coord(hass, _FakeStore())
     assert coord._read_deadline_minutes() == 48 * 60
 

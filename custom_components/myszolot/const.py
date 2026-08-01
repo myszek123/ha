@@ -17,9 +17,9 @@ NUMBER_CHARGE_LIMIT = "number.myszolot_charge_limit"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
 # Override mode helpers (target SoC + deadline window) — dashboard panel
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
-# Preferred: minutes. Hours kept as fallback for older helpers/UI.
-INPUT_NUMBER_DEADLINE_MINUTES = "input_number.myszolot_deadline_minutes"
+# UI: hours. Minutes = optional legacy fallback only.
 INPUT_NUMBER_DEADLINE_HOURS = "input_number.myszolot_deadline_hours"
+INPUT_NUMBER_DEADLINE_MINUTES = "input_number.myszolot_deadline_minutes"
 # Persisted absolute override plan (survives HA restart)
 STORAGE_OVERRIDE_PLAN = "myszolot.override_plan"
 # Tunables as HA helpers (not on dashboard): change via Helpers / Dev Tools

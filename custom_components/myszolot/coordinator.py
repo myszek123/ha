@@ -696,17 +696,25 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             return default
 
     def _read_deadline_minutes(self) -> int:
-        """Prefer minutes helper; fall back to hours × 60."""
+        """Override window from helpers → minutes for internal math.
+
+        **UI is hours** (`input_number.myszolot_deadline_hours`). Minutes helper
+        is optional fallback only (legacy / no hours helper).
+        """
+        hours_state = self.hass.states.get(INPUT_NUMBER_DEADLINE_HOURS)
+        if hours_state is not None and hours_state.state not in _UNAVAILABLE:
+            try:
+                hours = int(float(hours_state.state))
+                return max(1, min(48 * 60, hours * 60))
+            except (ValueError, TypeError):
+                pass
         state = self.hass.states.get(INPUT_NUMBER_DEADLINE_MINUTES)
         if state is not None and state.state not in _UNAVAILABLE:
             try:
                 return max(1, min(48 * 60, int(float(state.state))))
             except (ValueError, TypeError):
                 pass
-        hours = self._read_helper_int(
-            INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
-        )
-        return max(1, min(48 * 60, int(hours) * 60))
+        return max(1, min(48 * 60, DEFAULT_OVERRIDE_DEADLINE_HOURS * 60))
 
     def _cfg(self) -> dict:
         return {**self.config_entry.data, **(self.config_entry.options or {})}

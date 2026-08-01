@@ -7,6 +7,19 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.1] — 01-08-2026
+
+### Changed
+
+- **Override window UI is hours again** (`input_number.myszolot_deadline_hours`).
+  Coordinator prefers hours; minutes helper is optional legacy fallback only.
+- Dashboard card: “Within hours” (not minutes).
+- Actuator: **5 s** settle after garage socket off before Autel on (shared circuit).
+
+### Fixed
+
+- Missing-helper notify no longer requires the minutes helper.
+
 ## [1.5.0] — 01-08-2026
 
 ### Added
