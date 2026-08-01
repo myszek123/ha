@@ -146,6 +146,9 @@ def _make_ha_mocks() -> dict:
     helpers_storage_mock = MagicMock()
     helpers_storage_mock.Store = _Store
     helpers_mock.storage = helpers_storage_mock
+    helpers_device_registry_mock = MagicMock()
+    helpers_device_registry_mock.DeviceInfo = dict  # enough for tests
+    helpers_mock.device_registry = helpers_device_registry_mock
 
     config_entries_mock = MagicMock()
     config_entries_mock.ConfigFlow = _ConfigFlow
@@ -194,6 +197,7 @@ def _make_ha_mocks() -> dict:
         "homeassistant.helpers.config_validation": config_validation_mock,
         "homeassistant.helpers.dispatcher": helpers_dispatcher_mock,
         "homeassistant.helpers.storage": helpers_storage_mock,
+        "homeassistant.helpers.device_registry": helpers_device_registry_mock,
         "homeassistant.components": components_mock,
         "homeassistant.components.select": select_mock,
         "homeassistant.components.sensor": sensor_mock,

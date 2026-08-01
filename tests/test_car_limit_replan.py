@@ -5,6 +5,7 @@ from custom_components.myszolot.coordinator import (
     clamp_charge_limit_soc,
     resolve_target_with_car_limit,
     should_reset_car_limit_after_session,
+    presence_allows_home_charge,
 )
 from custom_components.myszolot.const import (
     MODE_SMART,
@@ -79,10 +80,27 @@ def test_override_adopts_car_limit_updates_locked_target():
         override_target=90,
         default_target=80,
         helper_override_target=90,
+        allow_adopt=True,
     )
     assert t == 96
     assert ov == 96
     assert adopted is True
+
+
+def test_override_does_not_adopt_stale_car_limit_when_away():
+    """Away: physical limit may be old — keep locked override target."""
+    t, ov, adopted = resolve_target_with_car_limit(
+        feature_enabled=True,
+        mode=MODE_OVERRIDE,
+        car_limit=80,
+        override_target=96,
+        default_target=80,
+        helper_override_target=96,
+        allow_adopt=False,
+    )
+    assert t == 96
+    assert ov is None
+    assert adopted is False
 
 
 def test_override_same_car_limit_no_persist_churn():
@@ -110,6 +128,15 @@ def test_ignore_car_limit_after_our_write():
         ignore_car_limit=80,
     )
     assert t == 80
+
+
+def test_presence_matches_actuator_gate():
+    assert presence_allows_home_charge("on", "home", False) is True
+    assert presence_allows_home_charge("on", "unknown", False) is True
+    assert presence_allows_home_charge("on", "not_home", False) is False
+    assert presence_allows_home_charge("off", "home", False) is False
+    assert presence_allows_home_charge("unavailable", "home", False) is True
+    assert presence_allows_home_charge("off", "not_home", True) is True  # force-home
 
 
 def test_reset_car_limit_when_session_complete():

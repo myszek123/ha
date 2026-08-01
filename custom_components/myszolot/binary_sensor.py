@@ -5,10 +5,10 @@ from homeassistant.components.binary_sensor import BinarySensorDeviceClass, Bina
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import MyszolotCoordinator
+from .entity import MyszolotEntity
 
 
 async def async_setup_entry(
@@ -17,16 +17,16 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: MyszolotCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([MyszolotCableNeededBinarySensor(coordinator)])
+    async_add_entities([MyszolotCableNeededBinarySensor(coordinator, entry)])
 
 
-class MyszolotCableNeededBinarySensor(CoordinatorEntity, BinarySensorEntity):
+class MyszolotCableNeededBinarySensor(MyszolotEntity, BinarySensorEntity):
     """
     binary_sensor.myszolot_cable_needed
 
-    On when: should_charge=True AND cable not connected AND device tracker
-    reports home (location override is ignored). Used as trigger for the
-    pre-session cable reminder automation.
+    On when: should_charge=True AND cable not connected AND car in garage
+    (vision or GPS fallback). Used as trigger for the pre-session cable
+    reminder automation.
     """
 
     _attr_name = "Myszolot Cable Needed"
@@ -34,8 +34,8 @@ class MyszolotCableNeededBinarySensor(CoordinatorEntity, BinarySensorEntity):
     _attr_icon = "mdi:power-plug-alert"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
-        super().__init__(coordinator)
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
 
     @property
     def is_on(self) -> bool:

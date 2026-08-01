@@ -72,11 +72,11 @@
     - variables:
         start_kwh: "{{ states('input_number.myszolot_charge_session_start_kwh') | float(0) }}"
         end_kwh: "{{ states('sensor.myszolot_charge_energy_added') | float(0) }}"
-        # energy_added resets between sessions; if end < start, use end as session total
+        # energy_added is cumulative; prefer end-start. If counter reset, use end alone.
         kwh: >-
           {% set s = start_kwh %}
           {% set e = end_kwh %}
-          {{ e if e >= s else e }}
+          {{ (e - s) if e >= s else e }}
         start_s: "{{ states('input_datetime.myszolot_charge_session_start') }}"
         soc: "{{ states('sensor.myszolot_battery_level') }}"
         price: "{{ states('sensor.pstryk_current_buy_price') | float(0) }}"

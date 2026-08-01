@@ -1,15 +1,18 @@
 alias: Tesla Charging - Set Charge Limit by Mode
 description: >
-  Smart mode sets the Tesla charge limit to the daily target (80%).
-  Override mode sets it to input_number.myszolot_custom_target_soc.
-  Only applies when the car is at home.
-  Note: with car_limit_replan (default ON), mid-session changes of the car limit
-  are adopted by myszolot and replan; session complete restores 80% from the
-  integration. This automation only runs on mode/helper change (not every tick).
+  Smart mode sets the Tesla charge limit to the integration default target
+  (default_target_soc from sensor attrs, usually 80%). Override mode sets it to
+  the locked override target (custom helper, then sensor target_soc).
+  Runs when mode/helper changes OR when the car arrives home (so away overrides
+  still get the physical limit written). Mid-session car-limit edits are still
+  adopted by car_limit_replan when home.
 triggers:
   - entity_id: select.myszolot_charge_mode
     trigger: state
   - entity_id: input_number.myszolot_custom_target_soc
+    trigger: state
+  - entity_id: device_tracker.myszolot_location
+    to: home
     trigger: state
 conditions:
   - condition: state
@@ -26,11 +29,15 @@ actions:
             target:
               entity_id: number.myszolot_charge_limit
             data:
-              value: "{{ states('input_number.myszolot_custom_target_soc') | int }}"
+              value: >-
+                {{ state_attr('sensor.myszolot_charge_reason', 'target_soc')
+                   | int(states('input_number.myszolot_custom_target_soc') | int(80)) }}
     default:
       - action: number.set_value
         target:
           entity_id: number.myszolot_charge_limit
         data:
-          value: 80
+          value: >-
+            {{ state_attr('sensor.myszolot_charge_reason', 'default_target_soc')
+               | int(80) }}
 mode: single

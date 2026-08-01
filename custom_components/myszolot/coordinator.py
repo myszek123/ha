@@ -474,6 +474,7 @@ def resolve_target_with_car_limit(
     default_target: int,
     helper_override_target: int,
     ignore_car_limit: int | None = None,
+    allow_adopt: bool = True,
 ) -> tuple[int, int | None, bool]:
     """
     Feature: car charge limit drives active target; override keeps its window.
@@ -482,8 +483,10 @@ def resolve_target_with_car_limit(
     new_override_target is None when override target should not change.
     ignore_car_limit: skip adopt when car still shows a value we just wrote
     (session-complete reset to default 80%).
+    allow_adopt: False when car is away — physical limit may be stale and must
+    not silently overwrite a locked override / smart session target.
     """
-    if not feature_enabled or car_limit is None:
+    if not feature_enabled or car_limit is None or not allow_adopt:
         if mode == MODE_OVERRIDE:
             t = override_target if override_target is not None else helper_override_target
             return int(t), None, False
@@ -503,6 +506,28 @@ def resolve_target_with_car_limit(
 
     # Smart: car limit is session target (usually 80 after HA/automation write)
     return int(car_limit), None, car_limit != default_target
+
+
+def presence_allows_home_charge(
+    garage_state: str | None,
+    tracker_state: str | None,
+    location_override: bool,
+) -> bool:
+    """
+    Same presence gate as the main charging actuator start branch.
+
+    Vision car present + GPS not contradicting, or vision unavailable + GPS home,
+    or force-home override.
+    """
+    if location_override:
+        return True
+    garage = (garage_state or "").lower()
+    tracker = (tracker_state or "").lower()
+    if garage in _UNAVAILABLE or garage == "":
+        return tracker == "home"
+    if garage == "on":
+        return tracker in ("home", "unknown", "unavailable", "")
+    return False  # garage off / empty
 
 
 def should_reset_car_limit_after_session(
@@ -672,6 +697,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         # After session complete we write default limit to the car; until the car
         # entity reflects it, do not re-adopt the previous elevated limit.
         self._awaiting_default_car_limit: bool = False
+        self._awaiting_default_since: datetime | None = None
+        # How long to pin target to default while waiting for car write (asleep car)
+        self._awaiting_default_timeout = timedelta(minutes=15)
 
     @property
     def mode(self) -> str:
@@ -728,9 +756,18 @@ class MyszolotCoordinator(DataUpdateCoordinator):
     def _schedule_persist_override(self) -> None:
         self.hass.async_create_task(self._async_persist_override())
 
-    def _schedule_set_car_charge_limit(self, value: int) -> None:
-        """Write Tesla charge limit (e.g. restore 80% after session)."""
-        self._awaiting_default_car_limit = True
+    def _schedule_set_car_charge_limit(
+        self, value: int, *, restore_default: bool = False
+    ) -> None:
+        """Write Tesla charge limit.
+
+        restore_default=True: pin planning to default until car reflects it
+        (or timeout). restore_default=False: push intended limit (e.g. override
+        target) without changing adopt-guard state.
+        """
+        if restore_default:
+            self._awaiting_default_car_limit = True
+            self._awaiting_default_since = datetime.now()
         self.hass.async_create_task(self._async_set_car_charge_limit(int(value)))
 
     async def _async_set_car_charge_limit(self, value: int) -> None:
@@ -815,6 +852,11 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 target, minutes, self._override_deadline,
             )
             self._schedule_persist_override()
+            # Push limit to car so physical entity matches locked target even if
+            # charge-limit automation cannot run (car away). Prevents car_limit_replan
+            # from re-adopting a stale % when the car comes home later.
+            if self._feature_car_limit_replan():
+                self._schedule_set_car_charge_limit(target, restore_default=False)
         else:
             self._mode = MODE_SMART
             self._override_target_soc = None
@@ -823,6 +865,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             if mode != prev:
                 self._charging_started = False
             self._schedule_persist_override()
+            if mode != prev and self._feature_car_limit_replan():
+                default_t = int(self._cfg().get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC))
+                self._schedule_set_car_charge_limit(default_t, restore_default=True)
 
     def _reset_to_smart(self, reason: str) -> None:
         _LOGGER.info("Resetting mode to smart (%s)", reason)
@@ -839,6 +884,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         tracked = [
             SENSOR_SOC,
             BINARY_SENSOR_CABLE,
+            BINARY_SENSOR_GARAGE_CAR,
             DEVICE_TRACKER,
             SENSOR_PRICE,
             NUMBER_CHARGE_CURRENT,
@@ -848,6 +894,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             INPUT_NUMBER_DEADLINE_MINUTES,
             INPUT_NUMBER_MIN_SOC,
             INPUT_NUMBER_MAX_PRICE_THRESHOLD,
+            INPUT_BOOLEAN_LOCATION_OVERRIDE,
         ]
 
         @callback
@@ -907,7 +954,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 self._reset_to_smart("override deadline reached")
                 mode = MODE_SMART
                 if feature_car_limit:
-                    self._schedule_set_car_charge_limit(default_target_soc)
+                    self._schedule_set_car_charge_limit(
+                        default_target_soc, restore_default=True
+                    )
 
         # Target / deadline for current mode (before car-limit feature)
         hard_end: datetime | None = None
@@ -929,6 +978,27 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             deadline_hours = smart_deadline_hours
             use_price_cap = True
 
+        # External entity states (presence before car-limit adopt)
+        soc_state = self.hass.states.get(SENSOR_SOC)
+        current_soc = _parse_float(soc_state) or 0.0
+
+        cable_state = self.hass.states.get(BINARY_SENSOR_CABLE)
+        cable_connected = cable_state is not None and cable_state.state == "on"
+
+        location_state = self.hass.states.get(DEVICE_TRACKER)
+        is_home_actual = location_state is not None and location_state.state == "home"
+        tracker_state = location_state.state if location_state is not None else None
+
+        override_state = self.hass.states.get(INPUT_BOOLEAN_LOCATION_OVERRIDE)
+        location_override_active = override_state is not None and override_state.state == "on"
+
+        garage_state_obj = self.hass.states.get(BINARY_SENSOR_GARAGE_CAR)
+        garage_state = garage_state_obj.state if garage_state_obj is not None else None
+        # Align with actuator: vision + GPS (not GPS-only) for home-charge decisions
+        is_home = presence_allows_home_charge(
+            garage_state, tracker_state, location_override_active
+        )
+
         # Feature (flag, default ON): car charge limit replan — keep override window
         car_limit = self._read_car_charge_limit() if feature_car_limit else None
         if (
@@ -937,12 +1007,28 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             and car_limit == default_target_soc
         ):
             self._awaiting_default_car_limit = False
+            self._awaiting_default_since = None
+        # Timeout: car asleep / write never lands — stop pinning to default forever
+        if (
+            self._awaiting_default_car_limit
+            and self._awaiting_default_since is not None
+            and (now - self._awaiting_default_since) > self._awaiting_default_timeout
+        ):
+            _LOGGER.warning(
+                "Car charge limit still not %s%% after %s; clearing await pin",
+                default_target_soc,
+                self._awaiting_default_timeout,
+            )
+            self._awaiting_default_car_limit = False
+            self._awaiting_default_since = None
 
         # While restoring daily default on the car, plan at default (don't re-adopt old %)
         car_limit_for_target = car_limit
         if self._awaiting_default_car_limit:
             car_limit_for_target = default_target_soc
 
+        # Only adopt car-limit changes when home (stale limit when away must not
+        # overwrite locked override / smart targets).
         target_soc, new_override_target, adopted = resolve_target_with_car_limit(
             feature_enabled=feature_car_limit and not self._awaiting_default_car_limit,
             mode=mode,
@@ -951,6 +1037,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             default_target=default_target_soc,
             helper_override_target=helper_override_target,
             ignore_car_limit=None,
+            allow_adopt=is_home,
         )
         if self._awaiting_default_car_limit:
             target_soc = default_target_soc
@@ -969,20 +1056,6 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 "Car charge limit %s%% → smart replan (horizon kept)",
                 target_soc,
             )
-
-        # External entity states
-        soc_state = self.hass.states.get(SENSOR_SOC)
-        current_soc = _parse_float(soc_state) or 0.0
-
-        cable_state = self.hass.states.get(BINARY_SENSOR_CABLE)
-        cable_connected = cable_state is not None and cable_state.state == "on"
-
-        location_state = self.hass.states.get(DEVICE_TRACKER)
-        is_home_actual = location_state is not None and location_state.state == "home"
-
-        override_state = self.hass.states.get(INPUT_BOOLEAN_LOCATION_OVERRIDE)
-        location_override_active = override_state is not None and override_state.state == "on"
-        is_home = is_home_actual or location_override_active
 
         price_state = self.hass.states.get(SENSOR_PRICE)
         current_price = _parse_float(price_state) or 0.0
@@ -1009,7 +1082,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._reset_to_smart(f"override target {target_soc}% reached (SoC {current_soc:.1f}%)")
             mode = MODE_SMART
             if feature_car_limit:
-                self._schedule_set_car_charge_limit(default_target_soc)
+                self._schedule_set_car_charge_limit(
+                    default_target_soc, restore_default=True
+                )
             target_soc = default_target_soc
             deadline_hours = smart_deadline_hours
             use_price_cap = True
@@ -1026,7 +1101,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 default_target=default_target_soc,
             )
         ):
-            self._schedule_set_car_charge_limit(default_target_soc)
+            self._schedule_set_car_charge_limit(
+                default_target_soc, restore_default=True
+            )
             target_soc = default_target_soc
 
         if current_soc >= target_soc:
@@ -1139,6 +1216,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "current_price": current_price,
             "current_soc": current_soc,
             "target_soc": target_soc,
+            "default_target_soc": default_target_soc,
             "min_soc": min_soc,
             "max_price_threshold": max_price_threshold,
             "price_cap_active": use_price_cap,

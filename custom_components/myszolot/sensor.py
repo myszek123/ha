@@ -18,6 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MODE_OVERRIDE, SIGNAL_WEEKLY_DRIVE_UPDATED
 from .coordinator import MyszolotCoordinator
+from .entity import MyszolotEntity
 from .weekly_drive import weekly_drive_data
 
 
@@ -29,14 +30,14 @@ async def async_setup_entry(
     coordinator: MyszolotCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
-            MyszolotChargeReasonSensor(coordinator),
-            MyszolotChargeScheduleSensor(coordinator),
-            MyszolotNextSessionSensor(coordinator),
-            MyszolotExpectedEndSocSensor(coordinator),
-            MyszolotPlannedDurationSensor(coordinator),
-            MyszolotOverrideRemainingMinutesSensor(coordinator),
-            MyszolotOverrideRemainingSensor(coordinator),
-            MyszolotMaxReachableSocSensor(coordinator),
+            MyszolotChargeReasonSensor(coordinator, entry),
+            MyszolotChargeScheduleSensor(coordinator, entry),
+            MyszolotNextSessionSensor(coordinator, entry),
+            MyszolotExpectedEndSocSensor(coordinator, entry),
+            MyszolotPlannedDurationSensor(coordinator, entry),
+            MyszolotOverrideRemainingMinutesSensor(coordinator, entry),
+            MyszolotOverrideRemainingSensor(coordinator, entry),
+            MyszolotMaxReachableSocSensor(coordinator, entry),
             # Last complete Mon–Sun week (pushed by charge-log)
             MyszolotWeeklyDriveSummarySensor(hass),
             MyszolotWeeklyDriveDistanceSensor(hass),
@@ -47,9 +48,11 @@ async def async_setup_entry(
     )
 
 
-class _MyszolotBaseSensor(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: MyszolotCoordinator, unique_id: str, name: str) -> None:
-        super().__init__(coordinator)
+class _MyszolotBaseSensor(MyszolotEntity, SensorEntity):
+    def __init__(
+        self, coordinator: MyszolotCoordinator, entry: ConfigEntry, unique_id: str, name: str
+    ) -> None:
+        super().__init__(coordinator, entry)
         self._attr_unique_id = unique_id
         self._attr_name = name
 
@@ -63,8 +66,10 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
 
     _attr_icon = "mdi:car-electric"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
-        super().__init__(coordinator, "myszolot_charge_reason", "Myszolot Charge Reason")
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator, entry, "myszolot_charge_reason", "Myszolot Charge Reason"
+        )
 
     @property
     def state(self) -> str:
@@ -86,6 +91,7 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "current_price": d.get("current_price", 0.0),
             "current_soc": d.get("current_soc", 0.0),
             "target_soc": d.get("target_soc", 80),
+            "default_target_soc": d.get("default_target_soc", 80),
             "min_soc": d.get("min_soc", 30),
             "max_price_threshold": d.get("max_price_threshold", 1.0),
             "price_cap_active": d.get("price_cap_active", True),
@@ -115,9 +121,10 @@ class MyszolotChargeScheduleSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:cash-clock"
     _attr_native_unit_of_measurement = "PLN"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_charge_schedule",
             "Myszolot Planned Session Cost",
         )
@@ -172,8 +179,10 @@ class MyszolotNextSessionSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:clock-start"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
-        super().__init__(coordinator, "myszolot_next_session_start", "Myszolot Next Session Start")
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator, entry, "myszolot_next_session_start", "Myszolot Next Session Start"
+        )
 
     @property
     def native_value(self) -> datetime | None:
@@ -189,9 +198,10 @@ class MyszolotExpectedEndSocSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:battery-charging-80"
     _attr_native_unit_of_measurement = "%"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_expected_end_soc",
             "Myszolot Expected End SoC",
         )
@@ -207,9 +217,10 @@ class MyszolotPlannedDurationSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:timer-outline"
     _attr_native_unit_of_measurement = "min"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_planned_duration",
             "Myszolot Planned Session Duration",
         )
@@ -225,9 +236,10 @@ class MyszolotMaxReachableSocSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:battery-alert"
     _attr_native_unit_of_measurement = "%"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_max_reachable_soc",
             "Myszolot Max Reachable SoC",
         )
@@ -243,9 +255,10 @@ class MyszolotOverrideRemainingMinutesSensor(_MyszolotBaseSensor):
     _attr_icon = "mdi:timer"
     _attr_native_unit_of_measurement = "min"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_override_remaining_minutes",
             "Myszolot Override Remaining Minutes",
         )
@@ -260,9 +273,10 @@ class MyszolotOverrideRemainingSensor(_MyszolotBaseSensor):
 
     _attr_icon = "mdi:timer-outline"
 
-    def __init__(self, coordinator: MyszolotCoordinator) -> None:
+    def __init__(self, coordinator: MyszolotCoordinator, entry: ConfigEntry) -> None:
         super().__init__(
             coordinator,
+            entry,
             "myszolot_override_remaining",
             "Myszolot Override Remaining",
         )

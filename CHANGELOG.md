@@ -7,6 +7,22 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.2] — 01-08-2026
+
+### Fixed
+
+- **Override no longer silently reverts** when car is away: do not adopt a stale
+  physical charge-limit; push limit on override enter; charge-limit automation
+  also runs when GPS arrives home.
+- Session stop notification **kWh delta** (`end − start`, not raw cumulative).
+- **Await default charge limit** times out after 15 min (asleep car).
+- Coordinator **home presence** matches actuator (garage vision + GPS).
+- Charge-limit smart restore uses `default_target_soc` (not hardcoded 80).
+
+### Changed
+
+- Entities group under a **Myszolot Charging** device in HA.
+
 ## [1.5.1] — 01-08-2026
 
 ### Changed
