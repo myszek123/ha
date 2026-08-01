@@ -895,26 +895,20 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             if use_price_cap and not capped and uncapped:
                 schedule_all_prices_above_max = True
 
-            if mode == MODE_OVERRIDE:
-                # Override = urgency: continuous from now until absolute deadline.
-                dl_end = hard_end if hard_end is not None else (
-                    now + timedelta(hours=deadline_hours)
-                )
-                plan = build_asap_schedule(
-                    E_needed,
-                    max_charge_rate_kW,
-                    now,
-                    dl_end,
-                    all_prices,
-                )
-            else:
-                # Smart: cheapest hours under price cap
-                plan = capped if use_price_cap else uncapped
+            # Smart: cheapest hours under price cap.
+            # Override: cheapest hours within absolute deadline, no price hard-stop
+            # (may wait for a later cheap slot — not forced ASAP).
+            plan = uncapped if mode == MODE_OVERRIDE else (
+                capped if use_price_cap else uncapped
+            )
             # Pass 1: sessions at full rate from the plan slots
             sessions = compute_sessions(plan, now.date())
-            # Pass 2: flatten inside selected hours, never past absolute override end
+            # Pass 2: flatten inside selected hours; override never past absolute end
             sessions = flatten_sessions(
-                sessions, charge_amps, now, hard_end=hard_end if mode == MODE_OVERRIDE else None
+                sessions,
+                charge_amps,
+                now,
+                hard_end=hard_end if mode == MODE_OVERRIDE else None,
             )
 
         reason, should_charge, target_amps = determine_reason(
