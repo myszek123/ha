@@ -13,6 +13,7 @@ BINARY_SENSOR_GARAGE_CAR = "binary_sensor.garage_car_present"
 DEVICE_TRACKER = "device_tracker.myszolot_location"
 SENSOR_CHARGING = "sensor.myszolot_charging"
 NUMBER_CHARGE_CURRENT = "number.myszolot_charge_current"
+NUMBER_CHARGE_LIMIT = "number.myszolot_charge_limit"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
 # Override mode helpers (target SoC + deadline window) — dashboard panel
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
@@ -35,6 +36,8 @@ CONF_MIN_SOC = "min_soc"
 CONF_CHARGE_START_SOC = "charge_start_soc"
 CONF_MAX_PRICE_THRESHOLD = "max_price_threshold"
 CONF_SMART_DEADLINE_HOURS = "smart_deadline_hours"
+# Feature flag: car charge-limit changes replan (keep window); reset to default on done
+CONF_CAR_LIMIT_REPLAN = "car_limit_replan"
 
 # Defaults
 DEFAULT_CHARGER_PHASES = 3
@@ -50,6 +53,8 @@ DEFAULT_OVERRIDE_DEADLINE_HOURS = 24
 DEFAULT_OVERRIDE_DEADLINE_MINUTES = 120
 # Floor when flattening amps inside selected cheap hours (still ≤ charge_amps)
 DEFAULT_MIN_FLAT_AMPS = 5
+# Default ON — disable via Configure if car→HA limit coupling is unwanted
+DEFAULT_CAR_LIMIT_REPLAN = True
 
 # Charge modes — only daily smart + temporary override
 MODE_SMART = "smart"

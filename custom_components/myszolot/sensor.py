@@ -104,6 +104,8 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "override_deadline": od.isoformat() if od else None,
             "override_remaining_minutes": d.get("override_remaining_minutes", 0),
             "location_override_active": d.get("location_override_active", False),
+            "car_limit_replan": d.get("car_limit_replan", True),
+            "car_charge_limit": d.get("car_charge_limit"),
         }
 
 

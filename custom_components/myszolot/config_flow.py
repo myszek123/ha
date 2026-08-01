@@ -10,11 +10,11 @@ from .const import (
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS,
     CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC,
     CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD,
-    CONF_SMART_DEADLINE_HOURS,
+    CONF_SMART_DEADLINE_HOURS, CONF_CAR_LIMIT_REPLAN,
     DEFAULT_CHARGER_PHASES, DEFAULT_VOLTAGE, DEFAULT_FAST_AMPS,
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
-    DEFAULT_SMART_DEADLINE_HOURS,
+    DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_CAR_LIMIT_REPLAN,
 )
 
 CONFIG_SCHEMA = vol.Schema(
@@ -44,6 +44,7 @@ CONFIG_SCHEMA = vol.Schema(
         vol.Required(CONF_SMART_DEADLINE_HOURS, default=DEFAULT_SMART_DEADLINE_HOURS): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=72)
         ),
+        vol.Required(CONF_CAR_LIMIT_REPLAN, default=DEFAULT_CAR_LIMIT_REPLAN): bool,
     }
 )
 
@@ -133,6 +134,10 @@ class MyszolotOptionsFlow(config_entries.OptionsFlow):
                     CONF_SMART_DEADLINE_HOURS,
                     default=current.get(CONF_SMART_DEADLINE_HOURS, DEFAULT_SMART_DEADLINE_HOURS),
                 ): vol.All(vol.Coerce(int), vol.Range(min=1, max=72)),
+                vol.Required(
+                    CONF_CAR_LIMIT_REPLAN,
+                    default=current.get(CONF_CAR_LIMIT_REPLAN, DEFAULT_CAR_LIMIT_REPLAN),
+                ): bool,
             }
         )
 

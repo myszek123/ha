@@ -1,9 +1,10 @@
 {
   "domain": "myszolot",
   "name": "Myszolot Charging",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "config_flow": true,
-  "documentation": "https://github.com/myszek123/ha",
+  "documentation": "https://github.com/myszek123/ha/blob/main/CHANGELOG.md",
+  "issue_tracker": "https://github.com/myszek123/ha/issues",
   "requirements": [],
   "dependencies": [],
   "codeowners": [],

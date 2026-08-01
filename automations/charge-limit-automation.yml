@@ -3,6 +3,9 @@ description: >
   Smart mode sets the Tesla charge limit to the daily target (80%).
   Override mode sets it to input_number.myszolot_custom_target_soc.
   Only applies when the car is at home.
+  Note: with car_limit_replan (default ON), mid-session changes of the car limit
+  are adopted by myszolot and replan; session complete restores 80% from the
+  integration. This automation only runs on mode/helper change (not every tick).
 triggers:
   - entity_id: select.myszolot_charge_mode
     trigger: state

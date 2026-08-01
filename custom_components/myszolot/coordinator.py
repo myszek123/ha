@@ -13,17 +13,18 @@ from homeassistant.helpers.storage import Store
 from .const import (
     DOMAIN,
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
-    DEVICE_TRACKER, SENSOR_CHARGING, NUMBER_CHARGE_CURRENT,
+    DEVICE_TRACKER, SENSOR_CHARGING, NUMBER_CHARGE_CURRENT, NUMBER_CHARGE_LIMIT,
     MODE_SMART, MODE_OVERRIDE,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS,
     CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC,
     CONF_MIN_SOC, CONF_CHARGE_START_SOC, CONF_MAX_PRICE_THRESHOLD,
-    CONF_SMART_DEADLINE_HOURS,
+    CONF_SMART_DEADLINE_HOURS, CONF_CAR_LIMIT_REPLAN,
     DEFAULT_CHARGER_PHASES, DEFAULT_VOLTAGE, DEFAULT_FAST_AMPS,
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
     DEFAULT_OVERRIDE_DEADLINE_MINUTES, DEFAULT_MIN_FLAT_AMPS,
+    DEFAULT_CAR_LIMIT_REPLAN,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_DEADLINE_MINUTES,
     INPUT_NUMBER_MIN_SOC, INPUT_NUMBER_MAX_PRICE_THRESHOLD,
@@ -453,6 +454,73 @@ def expected_end_soc(
     return round(min(float(target_soc), float(current_soc) + delta), 1)
 
 
+def clamp_charge_limit_soc(value: float | int | None, *, lo: int = 50, hi: int = 100) -> int | None:
+    """Parse/clamp Tesla charge limit %; None if missing/invalid."""
+    if value is None:
+        return None
+    try:
+        v = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return max(lo, min(hi, v))
+
+
+def resolve_target_with_car_limit(
+    *,
+    feature_enabled: bool,
+    mode: str,
+    car_limit: int | None,
+    override_target: int | None,
+    default_target: int,
+    helper_override_target: int,
+    ignore_car_limit: int | None = None,
+) -> tuple[int, int | None, bool]:
+    """
+    Feature: car charge limit drives active target; override keeps its window.
+
+    Returns (target_soc, new_override_target, adopted_from_car).
+    new_override_target is None when override target should not change.
+    ignore_car_limit: skip adopt when car still shows a value we just wrote
+    (session-complete reset to default 80%).
+    """
+    if not feature_enabled or car_limit is None:
+        if mode == MODE_OVERRIDE:
+            t = override_target if override_target is not None else helper_override_target
+            return int(t), None, False
+        return int(default_target), None, False
+
+    if ignore_car_limit is not None and car_limit == ignore_car_limit:
+        if mode == MODE_OVERRIDE:
+            t = override_target if override_target is not None else helper_override_target
+            return int(t), None, False
+        return int(default_target), None, False
+
+    if mode == MODE_OVERRIDE:
+        prev = override_target if override_target is not None else helper_override_target
+        if int(prev) != int(car_limit):
+            return int(car_limit), int(car_limit), True
+        return int(car_limit), None, False
+
+    # Smart: car limit is session target (usually 80 after HA/automation write)
+    return int(car_limit), None, car_limit != default_target
+
+
+def should_reset_car_limit_after_session(
+    *,
+    feature_enabled: bool,
+    current_soc: float,
+    target_soc: int,
+    car_limit: int | None,
+    default_target: int,
+) -> bool:
+    """True when session goal met and car limit should return to daily default."""
+    if not feature_enabled or car_limit is None:
+        return False
+    if current_soc < target_soc:
+        return False
+    return int(car_limit) != int(default_target)
+
+
 def session_duration_minutes(sessions: list[dict]) -> int:
     """Total planned charging minutes across all sessions."""
     if not sessions:
@@ -601,6 +669,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._override_deadline_minutes: int | None = None
         self._unsub_listeners: list = []
         self._override_store = Store(hass, 1, STORAGE_OVERRIDE_PLAN)
+        # After session complete we write default limit to the car; until the car
+        # entity reflects it, do not re-adopt the previous elevated limit.
+        self._awaiting_default_car_limit: bool = False
 
     @property
     def mode(self) -> str:
@@ -637,8 +708,34 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         )
         return max(1, min(48 * 60, int(hours) * 60))
 
+    def _cfg(self) -> dict:
+        return {**self.config_entry.data, **(self.config_entry.options or {})}
+
+    def _feature_car_limit_replan(self) -> bool:
+        return bool(self._cfg().get(CONF_CAR_LIMIT_REPLAN, DEFAULT_CAR_LIMIT_REPLAN))
+
+    def _read_car_charge_limit(self) -> int | None:
+        return clamp_charge_limit_soc(_parse_float(self.hass.states.get(NUMBER_CHARGE_LIMIT)))
+
     def _schedule_persist_override(self) -> None:
         self.hass.async_create_task(self._async_persist_override())
+
+    def _schedule_set_car_charge_limit(self, value: int) -> None:
+        """Write Tesla charge limit (e.g. restore 80% after session)."""
+        self._awaiting_default_car_limit = True
+        self.hass.async_create_task(self._async_set_car_charge_limit(int(value)))
+
+    async def _async_set_car_charge_limit(self, value: int) -> None:
+        try:
+            await self.hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": NUMBER_CHARGE_LIMIT, "value": value},
+                blocking=False,
+            )
+            _LOGGER.info("Set car charge limit to %s%%", value)
+        except Exception:  # noqa: BLE001 — HA service may be missing in tests
+            _LOGGER.exception("Failed to set %s to %s", NUMBER_CHARGE_LIMIT, value)
 
     async def _async_persist_override(self) -> None:
         if self._mode == MODE_OVERRIDE and self._override_deadline is not None:
@@ -737,6 +834,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             DEVICE_TRACKER,
             SENSOR_PRICE,
             NUMBER_CHARGE_CURRENT,
+            NUMBER_CHARGE_LIMIT,
             INPUT_NUMBER_CUSTOM_TARGET_SOC,
             INPUT_NUMBER_DEADLINE_HOURS,
             INPUT_NUMBER_DEADLINE_MINUTES,
@@ -760,11 +858,11 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Compute the current charging decision."""
-        cfg = {**self.config_entry.data, **(self.config_entry.options or {})}
+        cfg = self._cfg()
 
         fast_amps: int = cfg.get(CONF_FAST_AMPS, DEFAULT_FAST_AMPS)
         battery_kWh: float = cfg.get(CONF_BATTERY_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)
-        default_target_soc: int = cfg.get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC)
+        default_target_soc: int = int(cfg.get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC))
         # Prefer HA helpers (tunable without reconfig); fall back to config entry
         min_soc_default = int(cfg.get(CONF_MIN_SOC, DEFAULT_MIN_SOC))
         min_soc: int = max(0, min(100, self._read_helper_int(
@@ -780,6 +878,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         )
         charger_phases: int = cfg.get(CONF_CHARGER_PHASES, DEFAULT_CHARGER_PHASES)
         voltage: int = cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
+        feature_car_limit = self._feature_car_limit_replan()
 
         tesla_current_state = self.hass.states.get(NUMBER_CHARGE_CURRENT)
         tesla_amps_raw = _parse_float(tesla_current_state)
@@ -799,13 +898,15 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             if now >= self._override_deadline:
                 self._reset_to_smart("override deadline reached")
                 mode = MODE_SMART
+                if feature_car_limit:
+                    self._schedule_set_car_charge_limit(default_target_soc)
 
-        # Target / deadline for current mode
+        # Target / deadline for current mode (before car-limit feature)
         hard_end: datetime | None = None
+        helper_override_target = self._read_helper_int(
+            INPUT_NUMBER_CUSTOM_TARGET_SOC, default_target_soc
+        )
         if mode == MODE_OVERRIDE:
-            target_soc = self._override_target_soc if self._override_target_soc is not None else (
-                self._read_helper_int(INPUT_NUMBER_CUSTOM_TARGET_SOC, default_target_soc)
-            )
             if self._override_deadline is not None:
                 hard_end = self._override_deadline
                 remaining_h = (self._override_deadline - now).total_seconds() / 3600.0
@@ -817,9 +918,49 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 deadline_hours = mins / 60.0
             use_price_cap = False
         else:
-            target_soc = default_target_soc
             deadline_hours = smart_deadline_hours
             use_price_cap = True
+
+        # Feature (flag, default ON): car charge limit replan — keep override window
+        car_limit = self._read_car_charge_limit() if feature_car_limit else None
+        if (
+            self._awaiting_default_car_limit
+            and car_limit is not None
+            and car_limit == default_target_soc
+        ):
+            self._awaiting_default_car_limit = False
+
+        # While restoring daily default on the car, plan at default (don't re-adopt old %)
+        car_limit_for_target = car_limit
+        if self._awaiting_default_car_limit:
+            car_limit_for_target = default_target_soc
+
+        target_soc, new_override_target, adopted = resolve_target_with_car_limit(
+            feature_enabled=feature_car_limit and not self._awaiting_default_car_limit,
+            mode=mode,
+            car_limit=car_limit_for_target if not self._awaiting_default_car_limit else None,
+            override_target=self._override_target_soc,
+            default_target=default_target_soc,
+            helper_override_target=helper_override_target,
+            ignore_car_limit=None,
+        )
+        if self._awaiting_default_car_limit:
+            target_soc = default_target_soc
+            new_override_target = None
+            adopted = False
+        if new_override_target is not None:
+            self._override_target_soc = new_override_target
+            self._schedule_persist_override()
+            _LOGGER.info(
+                "Car charge limit %s%% → replan (mode=%s, window kept)",
+                new_override_target,
+                mode,
+            )
+        elif adopted and mode == MODE_SMART:
+            _LOGGER.info(
+                "Car charge limit %s%% → smart replan (horizon kept)",
+                target_soc,
+            )
 
         # External entity states
         soc_state = self.hass.states.get(SENSOR_SOC)
@@ -855,13 +996,30 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 price = float(entry.get("price", 0))
                 all_prices.append({"hour": 24 + j, "price": price})
 
-        # Override complete: target reached → back to smart
+        # Override complete: target reached → back to smart + restore car limit 80%
         if mode == MODE_OVERRIDE and current_soc >= target_soc:
             self._reset_to_smart(f"override target {target_soc}% reached (SoC {current_soc:.1f}%)")
             mode = MODE_SMART
+            if feature_car_limit:
+                self._schedule_set_car_charge_limit(default_target_soc)
             target_soc = default_target_soc
             deadline_hours = smart_deadline_hours
             use_price_cap = True
+            hard_end = None
+
+        # Session complete (any mode): restore daily default charge limit on car
+        if (
+            not self._awaiting_default_car_limit
+            and should_reset_car_limit_after_session(
+                feature_enabled=feature_car_limit,
+                current_soc=current_soc,
+                target_soc=target_soc,
+                car_limit=car_limit,
+                default_target=default_target_soc,
+            )
+        ):
+            self._schedule_set_car_charge_limit(default_target_soc)
+            target_soc = default_target_soc
 
         if current_soc >= target_soc:
             self._charging_started = False
@@ -994,4 +1152,6 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "expected_end_soc": exp_soc,
             "charge_amps": charge_amps,
             "charge_rate_kw": round(max_charge_rate_kW, 3),
+            "car_limit_replan": feature_car_limit,
+            "car_charge_limit": car_limit,
         }

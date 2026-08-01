@@ -94,6 +94,22 @@ class _OptionsFlow(metaclass=_HAFlowMeta):
         return kw
 
 
+class _Store:
+    """In-memory HA Store stub (MagicMock cannot be constructed with a Mock hass)."""
+
+    def __init__(self, hass=None, version=1, key="", *args, **kwargs):
+        self.hass = hass
+        self.version = version
+        self.key = key
+        self._data: dict = {}
+
+    async def async_save(self, data):
+        self._data = dict(data or {})
+
+    async def async_load(self):
+        return dict(self._data)
+
+
 # ── Build mock modules ────────────────────────────────────────────────────────
 #
 # IMPORTANT: `from homeassistant import config_entries` uses getattr() on the
@@ -128,7 +144,7 @@ def _make_ha_mocks() -> dict:
     helpers_dispatcher_mock = MagicMock()
     helpers_mock.dispatcher = helpers_dispatcher_mock
     helpers_storage_mock = MagicMock()
-    helpers_storage_mock.Store = MagicMock
+    helpers_storage_mock.Store = _Store
     helpers_mock.storage = helpers_storage_mock
 
     config_entries_mock = MagicMock()
