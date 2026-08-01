@@ -1,7 +1,7 @@
 """Unit tests for build_schedule, compute_sessions, is_in_session, next_session."""
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import pytest
 
@@ -388,8 +388,9 @@ def test_flatten_respects_min_flat_amps():
 def test_asap_starts_now_not_later_hour():
     """Override ASAP: continuous from 12:12, does not wait for hour 13."""
     now = datetime(2024, 1, 15, 12, 12, 0)
+    deadline_end = now + timedelta(hours=2)
     # 10 kWh/h, need 15 kWh → 90 min → spans 12:12–13:42
-    plan = build_asap_schedule(15.0, MAX_KWH, now, deadline_hours=2)
+    plan = build_asap_schedule(15.0, MAX_KWH, now, deadline_end=deadline_end)
     assert plan
     assert plan[0]["hour"] == 12
     assert plan[0]["minutes"] == 48  # rest of hour 12
@@ -399,3 +400,20 @@ def test_asap_starts_now_not_later_hour():
     assert is_in_session(sessions, now) is True
     # Must not be waiting for a later session only
     assert next_session(sessions, now) is None
+
+
+def test_flatten_respects_hard_end_deadline():
+    """Flatten must not invent window past absolute override deadline."""
+    schedule = [
+        {"hour": 13, "minutes": 12, "kWh": 2.0, "cost": 1.0, "full": False},
+        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 2.5, "full": True},
+    ]
+    sessions = compute_sessions(schedule, TODAY)
+    now = datetime(2024, 1, 15, 13, 30, 0)
+    # Absolute end 14:00 — not full hour-span to 15:00
+    hard_end = datetime(2024, 1, 15, 14, 0, 0)
+    flat = flatten_sessions(
+        sessions, charge_amps=12, now_dt=now, min_flat_amps=5, hard_end=hard_end
+    )
+    s = flat[0]
+    assert s["end"] <= hard_end

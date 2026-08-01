@@ -133,8 +133,8 @@ cards:
     entities:
       - entity: input_number.myszolot_custom_target_soc
         name: Target SoC %
-      - entity: input_number.myszolot_deadline_hours
-        name: Within hours
+      - entity: input_number.myszolot_deadline_minutes
+        name: Within minutes
   # Compact action row: Start override | Smart (80%)
   - type: horizontal-stack
     cards:

@@ -16,7 +16,11 @@ NUMBER_CHARGE_CURRENT = "number.myszolot_charge_current"
 INPUT_BOOLEAN_LOCATION_OVERRIDE = "input_boolean.myszolot_location_override"
 # Override mode helpers (target SoC + deadline window) — dashboard panel
 INPUT_NUMBER_CUSTOM_TARGET_SOC = "input_number.myszolot_custom_target_soc"
+# Preferred: minutes. Hours kept as fallback for older helpers/UI.
+INPUT_NUMBER_DEADLINE_MINUTES = "input_number.myszolot_deadline_minutes"
 INPUT_NUMBER_DEADLINE_HOURS = "input_number.myszolot_deadline_hours"
+# Persisted absolute override plan (survives HA restart)
+STORAGE_OVERRIDE_PLAN = "myszolot.override_plan"
 # Tunables as HA helpers (not on dashboard): change via Helpers / Dev Tools
 INPUT_NUMBER_MIN_SOC = "input_number.myszolot_min_soc"
 INPUT_NUMBER_MAX_PRICE_THRESHOLD = "input_number.myszolot_max_price_threshold"
@@ -43,8 +47,9 @@ DEFAULT_CHARGE_START_SOC = 69
 DEFAULT_MAX_PRICE_THRESHOLD = 1.0
 DEFAULT_SMART_DEADLINE_HOURS = 48
 DEFAULT_OVERRIDE_DEADLINE_HOURS = 24
+DEFAULT_OVERRIDE_DEADLINE_MINUTES = 120
 # Floor when flattening amps inside selected cheap hours (still ≤ charge_amps)
-DEFAULT_MIN_FLAT_AMPS = 6
+DEFAULT_MIN_FLAT_AMPS = 5
 
 # Charge modes — only daily smart + temporary override
 MODE_SMART = "smart"

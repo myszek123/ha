@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.storage import Store
 
 from .const import (
     DOMAIN,
@@ -22,10 +23,11 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
-    DEFAULT_MIN_FLAT_AMPS,
+    DEFAULT_OVERRIDE_DEADLINE_MINUTES, DEFAULT_MIN_FLAT_AMPS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
-    INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_MIN_SOC,
-    INPUT_NUMBER_MAX_PRICE_THRESHOLD,
+    INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_DEADLINE_MINUTES,
+    INPUT_NUMBER_MIN_SOC, INPUT_NUMBER_MAX_PRICE_THRESHOLD,
+    STORAGE_OVERRIDE_PLAN,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
     REASON_MIN_SOC_FLOOR, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
@@ -121,20 +123,21 @@ def build_asap_schedule(
     E_needed: float,
     max_kWh_per_hour: float,
     now_dt: datetime,
-    deadline_hours: int,
+    deadline_end: datetime,
     all_prices: list[dict] | None = None,
 ) -> list[dict]:
     """
     Continuous charge from *now* for E_needed (override / urgency).
 
-    Does not skip to later cheaper hours — that caused sessions to stop at
-    hour boundaries when the knapsack re-picked a later slot.
+    deadline_end is an absolute wall-clock end (never “another N hours from now”
+    on each tick). Does not skip to later cheaper hours.
     """
-    if E_needed <= 0 or max_kWh_per_hour <= 0 or deadline_hours <= 0:
+    if E_needed <= 0 or max_kWh_per_hour <= 0:
+        return []
+    if deadline_end <= now_dt:
         return []
 
     price_by_hour = _price_map(all_prices)
-    deadline_end = now_dt + timedelta(hours=deadline_hours)
     max_minutes = max(1, int((deadline_end - now_dt).total_seconds() / 60.0))
     need_minutes = max(1, int(E_needed / max_kWh_per_hour * 60.0 + 0.999))  # ceil
     total_minutes = min(need_minutes, max_minutes)
@@ -267,17 +270,16 @@ def flatten_sessions(
     charge_amps: int,
     now_dt: datetime,
     min_flat_amps: int = DEFAULT_MIN_FLAT_AMPS,
+    hard_end: datetime | None = None,
 ) -> list[dict]:
     """
     Second pass: lower continuous amps inside already-selected hours.
 
-    Pass 1 (build_schedule + compute_sessions) packs energy at full rate into
-    the cheapest hours. Pass 2 expands each continuous group to the full
-    span of those hours (hour boundaries) and drops amps so the same kWh is
-    delivered over the longer window — no new hours ⇒ no spill into more
-    expensive slots.
+    Pass 1 packs energy at full rate. Pass 2 expands each continuous group to
+    the hour-span of those slots (no new price hours) and drops amps.
 
-    Emergency / min-SoC paths never use sessions, so they stay at full amps.
+    hard_end: absolute cap (override wall-clock deadline). Flatten must never
+    invent a longer window than this — that was the “still 2h left → 6A” bug.
     """
     if charge_amps <= 0 or not sessions:
         return sessions
@@ -300,6 +302,9 @@ def flatten_sessions(
         first_hour_start = sess["start"].replace(minute=0, second=0, microsecond=0)
         window_start = first_hour_start
         window_end = first_hour_start + timedelta(hours=(last_hour - first_hour + 1))
+        # Never stretch past absolute override deadline
+        if hard_end is not None and window_end > hard_end:
+            window_end = hard_end
 
         ws = window_start
         if now_dt > ws:
@@ -323,9 +328,12 @@ def flatten_sessions(
         # No slack in selected hours → keep packed full-rate session
         if avail_minutes <= need_minutes + 0.5:
             s = dict(sess)
-            # Keep original packed start/end from compute_sessions
             s["amps"] = charge_amps
             s["flattened"] = False
+            if hard_end is not None and s["end"] > hard_end:
+                s["end"] = hard_end
+            if s["end"] <= s["start"]:
+                s["end"] = s["start"] + timedelta(minutes=1)
             out.append(s)
             continue
 
@@ -337,7 +345,6 @@ def flatten_sessions(
             flat_amps = min_a
             duration = need_minutes * charge_amps / flat_amps
             if duration >= avail_minutes - 0.5:
-                # Even min_a needs the whole window (or more) — fill window
                 flat_amps = max(
                     min_a,
                     min(charge_amps, int(charge_amps * need_minutes / avail_minutes) or min_a),
@@ -350,11 +357,15 @@ def flatten_sessions(
             s = dict(sess)
             s["amps"] = charge_amps
             s["flattened"] = False
+            if hard_end is not None and s["end"] > hard_end:
+                s["end"] = hard_end
             out.append(s)
             continue
         else:
             start, end = ws, window_end
 
+        if hard_end is not None and end > hard_end:
+            end = hard_end
         flat_amps = max(min_a, min(charge_amps, int(flat_amps)))
         s = dict(sess)
         s["start"] = start
@@ -584,11 +595,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
         self._charging_started: bool = False
-        # Locked when override is selected (target + absolute deadline)
+        # Locked when override is selected (target + absolute wall-clock deadline)
         self._override_target_soc: int | None = None
         self._override_deadline: datetime | None = None
-        self._override_deadline_hours: int | None = None
+        self._override_deadline_minutes: int | None = None
         self._unsub_listeners: list = []
+        self._override_store = Store(hass, 1, STORAGE_OVERRIDE_PLAN)
 
     @property
     def mode(self) -> str:
@@ -612,34 +624,108 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             return default
 
+    def _read_deadline_minutes(self) -> int:
+        """Prefer minutes helper; fall back to hours × 60."""
+        state = self.hass.states.get(INPUT_NUMBER_DEADLINE_MINUTES)
+        if state is not None and state.state not in _UNAVAILABLE:
+            try:
+                return max(1, min(48 * 60, int(float(state.state))))
+            except (ValueError, TypeError):
+                pass
+        hours = self._read_helper_int(
+            INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
+        )
+        return max(1, min(48 * 60, int(hours) * 60))
+
+    def _schedule_persist_override(self) -> None:
+        self.hass.async_create_task(self._async_persist_override())
+
+    async def _async_persist_override(self) -> None:
+        if self._mode == MODE_OVERRIDE and self._override_deadline is not None:
+            data = {
+                "mode": MODE_OVERRIDE,
+                "target_soc": self._override_target_soc,
+                "deadline": self._override_deadline.isoformat(),
+                "deadline_minutes": self._override_deadline_minutes,
+            }
+        else:
+            data = {}
+        await self._override_store.async_save(data)
+
+    async def _async_restore_override(self) -> None:
+        """Restore absolute deadline after HA restart (never mint a fresh N minutes)."""
+        data = await self._override_store.async_load()
+        if not data or data.get("mode") != MODE_OVERRIDE:
+            return
+        raw_dl = data.get("deadline")
+        if not raw_dl:
+            return
+        try:
+            deadline = datetime.fromisoformat(raw_dl)
+        except (TypeError, ValueError):
+            return
+        # naive local times from datetime.now() — compare consistently
+        if deadline.tzinfo is not None:
+            deadline = deadline.replace(tzinfo=None)
+        if deadline <= datetime.now():
+            await self._override_store.async_save({})
+            return
+        self._mode = MODE_OVERRIDE
+        self._override_deadline = deadline
+        self._override_target_soc = data.get("target_soc")
+        self._override_deadline_minutes = data.get("deadline_minutes")
+        _LOGGER.info(
+            "Restored override from storage: target=%s deadline=%s",
+            self._override_target_soc,
+            self._override_deadline,
+        )
+
     def set_mode(self, mode: str) -> None:
-        """Select smart (default) or override (locked target + deadline)."""
+        """Select smart (default) or override (locked target + absolute deadline)."""
         if mode not in (MODE_SMART, MODE_OVERRIDE):
             _LOGGER.warning("Unknown mode %s; ignoring", mode)
             return
 
         prev = self._mode
-        self._mode = mode
+        now = datetime.now()
 
         if mode == MODE_OVERRIDE:
-            hours = max(1, min(48, self._read_helper_int(
-                INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
-            )))
             target = max(50, min(100, self._read_helper_int(
                 INPUT_NUMBER_CUSTOM_TARGET_SOC, DEFAULT_TARGET_SOC
             )))
-            now = datetime.now()
-            self._override_deadline_hours = hours
+            # Already in an active override: keep absolute deadline (no fresh 2h).
+            # Only refresh target from helper. To force a new window: Smart → Override.
+            if (
+                prev == MODE_OVERRIDE
+                and self._override_deadline is not None
+                and now < self._override_deadline
+            ):
+                self._mode = MODE_OVERRIDE
+                self._override_target_soc = target
+                _LOGGER.info(
+                    "Override already active — keeping deadline %s, target=%d%%",
+                    self._override_deadline,
+                    target,
+                )
+                self._schedule_persist_override()
+                return
+
+            minutes = self._read_deadline_minutes()
+            self._mode = MODE_OVERRIDE
+            self._override_deadline_minutes = minutes
             self._override_target_soc = target
-            self._override_deadline = now + timedelta(hours=hours)
+            self._override_deadline = now + timedelta(minutes=minutes)
             _LOGGER.info(
-                "Override locked: target=%d%% within %dh (deadline %s)",
-                target, hours, self._override_deadline,
+                "Override locked: target=%d%% within %d min (deadline %s)",
+                target, minutes, self._override_deadline,
             )
+            self._schedule_persist_override()
         else:
+            self._mode = MODE_SMART
             self._override_target_soc = None
             self._override_deadline = None
-            self._override_deadline_hours = None
+            self._override_deadline_minutes = None
+            self._schedule_persist_override()
 
         if mode != prev:
             self._charging_started = False
@@ -649,11 +735,13 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._mode = MODE_SMART
         self._override_target_soc = None
         self._override_deadline = None
-        self._override_deadline_hours = None
+        self._override_deadline_minutes = None
         self._charging_started = False
+        self._schedule_persist_override()
 
     async def async_setup(self) -> None:
         """Register state-change listeners for all relevant external entities."""
+        await self._async_restore_override()
         tracked = [
             SENSOR_SOC,
             BINARY_SENSOR_CABLE,
@@ -662,6 +750,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             NUMBER_CHARGE_CURRENT,
             INPUT_NUMBER_CUSTOM_TARGET_SOC,
             INPUT_NUMBER_DEADLINE_HOURS,
+            INPUT_NUMBER_DEADLINE_MINUTES,
             INPUT_NUMBER_MIN_SOC,
             INPUT_NUMBER_MAX_PRICE_THRESHOLD,
         ]
@@ -723,17 +812,20 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 mode = MODE_SMART
 
         # Target / deadline for current mode
+        hard_end: datetime | None = None
         if mode == MODE_OVERRIDE:
             target_soc = self._override_target_soc if self._override_target_soc is not None else (
                 self._read_helper_int(INPUT_NUMBER_CUSTOM_TARGET_SOC, default_target_soc)
             )
             if self._override_deadline is not None:
-                remaining = (self._override_deadline - now).total_seconds() / 3600.0
-                deadline_hours = max(1, int(remaining + 0.999))  # ceil hours left
+                hard_end = self._override_deadline
+                remaining_h = (self._override_deadline - now).total_seconds() / 3600.0
+                # Fractional hours for max_energy / price append; never invent a full extra hour
+                deadline_hours = max(1 / 60.0, remaining_h)
             else:
-                deadline_hours = self._read_helper_int(
-                    INPUT_NUMBER_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS
-                )
+                mins = self._read_deadline_minutes()
+                hard_end = now + timedelta(minutes=mins)
+                deadline_hours = mins / 60.0
             use_price_cap = False
         else:
             target_soc = default_target_soc
@@ -815,13 +907,15 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 schedule_all_prices_above_max = True
 
             if mode == MODE_OVERRIDE:
-                # Override = urgency: charge continuously from *now* (no wait for
-                # a later cheaper hour). Then flatten inside that span only.
+                # Override = urgency: continuous from now until absolute deadline.
+                dl_end = hard_end if hard_end is not None else (
+                    now + timedelta(hours=deadline_hours)
+                )
                 plan = build_asap_schedule(
                     E_needed,
                     max_charge_rate_kW,
                     now,
-                    deadline_hours,
+                    dl_end,
                     all_prices,
                 )
             else:
@@ -829,8 +923,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 plan = capped if use_price_cap else uncapped
             # Pass 1: sessions at full rate from the plan slots
             sessions = compute_sessions(plan, now.date())
-            # Pass 2: flatten amps across the selected hour span (no new hours)
-            sessions = flatten_sessions(sessions, charge_amps, now)
+            # Pass 2: flatten inside selected hours, never past absolute override end
+            sessions = flatten_sessions(
+                sessions, charge_amps, now, hard_end=hard_end if mode == MODE_OVERRIDE else None
+            )
 
         reason, should_charge, target_amps = determine_reason(
             mode=mode,
