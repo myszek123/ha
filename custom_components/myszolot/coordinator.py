@@ -681,7 +681,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         )
 
     def set_mode(self, mode: str) -> None:
-        """Select smart (default) or override (locked target + absolute deadline)."""
+        """Select smart (default) or override (locked target + absolute deadline).
+
+        Button / UI select of override = full replan: target + fresh window
+        (now + hours/minutes helper). HA restart restores the *persisted*
+        absolute deadline and does not call set_mode — so restart ≠ button.
+        """
         if mode not in (MODE_SMART, MODE_OVERRIDE):
             _LOGGER.warning("Unknown mode %s; ignoring", mode)
             return
@@ -693,30 +698,15 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             target = max(50, min(100, self._read_helper_int(
                 INPUT_NUMBER_CUSTOM_TARGET_SOC, DEFAULT_TARGET_SOC
             )))
-            # Already in an active override: keep absolute deadline (no fresh 2h).
-            # Only refresh target from helper. To force a new window: Smart → Override.
-            if (
-                prev == MODE_OVERRIDE
-                and self._override_deadline is not None
-                and now < self._override_deadline
-            ):
-                self._mode = MODE_OVERRIDE
-                self._override_target_soc = target
-                _LOGGER.info(
-                    "Override already active — keeping deadline %s, target=%d%%",
-                    self._override_deadline,
-                    target,
-                )
-                self._schedule_persist_override()
-                return
-
             minutes = self._read_deadline_minutes()
             self._mode = MODE_OVERRIDE
             self._override_deadline_minutes = minutes
             self._override_target_soc = target
+            # Always full replan on button hit (even if already in override)
             self._override_deadline = now + timedelta(minutes=minutes)
+            self._charging_started = False
             _LOGGER.info(
-                "Override locked: target=%d%% within %d min (deadline %s)",
+                "Override full replan: target=%d%% within %d min (deadline %s)",
                 target, minutes, self._override_deadline,
             )
             self._schedule_persist_override()
@@ -725,10 +715,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._override_target_soc = None
             self._override_deadline = None
             self._override_deadline_minutes = None
+            if mode != prev:
+                self._charging_started = False
             self._schedule_persist_override()
-
-        if mode != prev:
-            self._charging_started = False
 
     def _reset_to_smart(self, reason: str) -> None:
         _LOGGER.info("Resetting mode to smart (%s)", reason)
