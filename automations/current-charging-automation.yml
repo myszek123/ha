@@ -49,6 +49,7 @@ actions:
                           and (is_state('device_tracker.myszolot_location', 'home')
                                or is_state('input_boolean.myszolot_location_override', 'on')))) }}
         sequence:
+          # Shed shared-circuit socket first; brief settle so both aren't loaded together
           - if:
               - condition: template
                 value_template: "{{ not is_state('switch.garage240socket', 'off') }}"
@@ -57,6 +58,8 @@ actions:
                 target:
                   entity_id:
                     - switch.garage240socket
+              - delay:
+                  seconds: 5
           - if:
               - condition: template
                 value_template: "{{ not is_state('switch.autel_charge_control', 'on') }}"
