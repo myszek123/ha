@@ -55,6 +55,10 @@ DEFAULT_OVERRIDE_DEADLINE_MINUTES = 120
 DEFAULT_MIN_FLAT_AMPS = 5
 # Default ON — disable via Configure if car→HA limit coupling is unwanted
 DEFAULT_CAR_LIMIT_REPLAN = True
+# Override → smart: wait this long so a quick re-tap of override cancels (no replan)
+MODE_PENDING_SMART_SECONDS = 8
+# Main actuator entity (for UI/docs; notify automation checks this)
+AUTOMATION_CHARGING_ACTUATOR = "automation.tesla_charging_actuator"
 
 # Charge modes — only daily smart + temporary override
 MODE_SMART = "smart"

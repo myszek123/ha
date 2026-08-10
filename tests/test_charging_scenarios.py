@@ -475,14 +475,63 @@ async def test_restart_ignores_smart_mode_storage():
 
 
 def test_set_mode_smart_clears_override_state():
+    """Override → smart is delayed; timer fire applies smart."""
     hass = _fake_hass_with_helpers(target=95, hours=2)
     coord = _make_coord(hass, _FakeStore())
     coord.set_mode(MODE_OVERRIDE)
     assert coord.mode == MODE_OVERRIDE
     coord.set_mode(MODE_SMART)
+    # Still override until delay fires
+    assert coord.mode == MODE_OVERRIDE
+    assert coord.pending_smart is True
+    assert coord._pending_smart_fire is not None
+    coord._pending_smart_fire()
     assert coord.mode == MODE_SMART
     assert coord._override_deadline is None
     assert coord._override_target_soc is None
+    assert coord.pending_smart is False
+
+
+def test_pending_smart_cancelled_by_override_keeps_deadline():
+    """Mis-tap smart then override again: stay in override, no full replan."""
+    hass = _fake_hass_with_helpers(target=90, hours=3)
+    coord = _make_coord(hass, _FakeStore())
+    coord.set_mode(MODE_OVERRIDE)
+    deadline = coord._override_deadline
+    target = coord._override_target_soc
+    assert deadline is not None
+    assert target == 90
+
+    # Simulate 1h already consumed
+    coord._override_deadline = deadline - timedelta(hours=1)
+    kept = coord._override_deadline
+
+    coord.set_mode(MODE_SMART)
+    assert coord.pending_smart is True
+    assert coord.mode == MODE_OVERRIDE
+
+    # Change helpers as if user edited for a "new" override — cancel must ignore
+    coord.hass = _fake_hass_with_helpers(target=99, hours=5)
+    coord.set_mode(MODE_OVERRIDE)
+
+    assert coord.pending_smart is False
+    assert coord.mode == MODE_OVERRIDE
+    assert coord._override_target_soc == 90  # not 99
+    assert coord._override_deadline == kept  # not fresh 5h window
+
+
+def test_override_while_not_pending_still_full_replans():
+    """Normal second override press (no pending smart) still full-replans."""
+    hass = _fake_hass_with_helpers(target=90, hours=2)
+    coord = _make_coord(hass, _FakeStore())
+    coord.set_mode(MODE_OVERRIDE)
+    first = coord._override_deadline
+    coord.hass = _fake_hass_with_helpers(target=95, hours=4)
+    coord.set_mode(MODE_OVERRIDE)
+    assert coord._override_target_soc == 95
+    remaining = (coord._override_deadline - datetime.now()).total_seconds()
+    assert remaining > 200 * 60
+    assert coord._override_deadline != first
 
 
 def test_deadline_hours_is_ui_source_not_minutes():
@@ -653,7 +702,16 @@ def test_persist_smart_clears_storage():
     hass = _fake_hass_with_helpers(target=93, hours=2)
     store = _FakeStore({"mode": MODE_OVERRIDE, "target_soc": 90})
     coord = _make_coord(hass, store)
+    # Already smart at construct: selecting smart clears stale storage
     coord.set_mode(MODE_SMART)
+    assert store.data == {}
+
+    # Live override → smart (after pending fire) also clears
+    coord.set_mode(MODE_OVERRIDE)
+    assert store.data.get("mode") == MODE_OVERRIDE
+    coord.set_mode(MODE_SMART)
+    assert store.data.get("mode") == MODE_OVERRIDE  # still override while pending
+    coord._pending_smart_fire()
     assert store.data == {}
 
 

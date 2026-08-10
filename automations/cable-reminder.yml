@@ -1,39 +1,83 @@
-alias: Tesla Charging - Cable reminder
-description: >
-  Notifies when charging is needed, the cable is unplugged, and the car is
-  in the garage (Frigate spot classifier when available, else device tracker).
-  Uses binary_sensor.myszolot_cable_needed. Quiet between 23:30 and 06:00.
-triggers:
-  - trigger: time_pattern
-    minutes: "/2"
-  - trigger: state
-    entity_id: binary_sensor.myszolot_cable_needed
-    to: "on"
-conditions:
-  - condition: state
-    entity_id: binary_sensor.myszolot_cable_needed
-    state: "on"
-  - condition: template
-    value_template: >-
-      {{ is_state('binary_sensor.garage_car_present', 'on')
-         or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
-             and is_state('device_tracker.myszolot_location', 'home')) }}
-  - condition: template
-    value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
-  - condition: time
-    after: "06:00:00"
-    before: "23:30:00"
-actions:
-  - action: notify.mobile_app_j23
-    data:
-      title: "Myszolot: EV charging reminder"
-      message: >-
-        Plug in the cable to charge.
-        {% set next = states('sensor.myszolot_next_session_start') %}
-        {% if next not in ['unknown', 'unavailable', 'none', ''] %}
-        Next session starts at {{ (next | as_timestamp) | timestamp_custom('%H:%M', local=True) }}.
-        {% else %}
-        Charging session is starting now.
-        {% endif %}
-mode: single
-max_exceeded: silent
+# Cable plug-in reminders (max 5 per "need" cycle).
+#
+# Helper (create once if missing):
+#   counter.myszolot_cable_reminders
+#     name: Myszolot cable reminders
+#     minimum: 0
+#     maximum: 20
+#     step: 1
+#     initial: 0
+
+- id: myszolot_cable_reminder
+  alias: Tesla Charging - Cable reminder
+  description: >
+    Notifies when charging is needed, the cable is unplugged, and the car is
+    in the garage (Frigate spot classifier when available, else device tracker).
+    Uses binary_sensor.myszolot_cable_needed. Quiet between 23:30 and 06:00.
+    Stops after 5 notifications until cable_needed clears (counter reset).
+  triggers:
+    - trigger: time_pattern
+      minutes: "/2"
+    - trigger: state
+      entity_id: binary_sensor.myszolot_cable_needed
+      to: "on"
+  conditions:
+    - condition: state
+      entity_id: binary_sensor.myszolot_cable_needed
+      state: "on"
+    - condition: template
+      value_template: >-
+        {{ is_state('binary_sensor.garage_car_present', 'on')
+           or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
+               and is_state('device_tracker.myszolot_location', 'home')) }}
+    - condition: template
+      value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
+    - condition: time
+      after: "06:00:00"
+      before: "23:30:00"
+    - condition: template
+      value_template: >-
+        {{ states('counter.myszolot_cable_reminders') in ['unknown', 'unavailable']
+           or (states('counter.myszolot_cable_reminders') | int(0)) < 5 }}
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: EV charging reminder"
+        message: >-
+          Plug in the cable to charge.
+          {% set next = states('sensor.myszolot_next_session_start') %}
+          {% if next not in ['unknown', 'unavailable', 'none', ''] %}
+          Next session starts at {{ (next | as_timestamp) | timestamp_custom('%H:%M', local=True) }}.
+          {% else %}
+          Charging session is starting now.
+          {% endif %}
+          {% set n = states('counter.myszolot_cable_reminders') | int(0) + 1 %}
+          ({{ n }}/5)
+    - if:
+        - condition: template
+          value_template: >-
+            {{ states('counter.myszolot_cable_reminders') not in ['unknown', 'unavailable'] }}
+      then:
+        - action: counter.increment
+          target:
+            entity_id: counter.myszolot_cable_reminders
+  mode: single
+  max_exceeded: silent
+
+- id: myszolot_cable_reminder_reset
+  alias: Tesla Charging - Cable reminder counter reset
+  description: Reset reminder count when cable is no longer needed (plugged or plan off).
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.myszolot_cable_needed
+      to: "off"
+  conditions:
+    - condition: template
+      value_template: >-
+        {{ states('counter.myszolot_cable_reminders') not in ['unknown', 'unavailable']
+           and (states('counter.myszolot_cable_reminders') | int(0)) > 0 }}
+  actions:
+    - action: counter.reset
+      target:
+        entity_id: counter.myszolot_cable_reminders
+  mode: single

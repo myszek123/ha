@@ -7,6 +7,28 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.3] — 10-08-2026
+
+### Fixed
+
+- **Plan amps never above `fast_amps` (12)** — car entity idle at 16 A no longer
+  inflates `charge_amps` / brief `target_amps` 13–14.
+- **Override → smart mis-tap** — 8 s pending window; re-selecting override
+  **cancels** smart and keeps the existing deadline/target (no full replan).
+
+### Changed
+
+- **Actuator Autel max slew:** ramp **down** 1 A per minute; ramp **up** jumps
+  to target (starts cleanly, avoids mid-session 12→5 jumps).
+- **Cable reminder:** max **5** notifications per need cycle
+  (`counter.myszolot_cable_reminders`, reset when `cable_needed` clears).
+- **Notify** when mode is selected (or charge is planned) while
+  `automation.tesla_charging_actuator` is **off**.
+
+### Added
+
+- Attribute `pending_smart` on `sensor.myszolot_charge_reason`.
+
 ## [1.5.2] — 01-08-2026
 
 ### Fixed

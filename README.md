@@ -119,7 +119,7 @@ max_charge_rate_kW = charge_amps × voltage × charger_phases / 1000
 
 | Mode | Target SoC | Price hard-stop | SoC debounce | Scheduling |
 |---|---|---|---|---|
-| `smart` | 80% (config) | Yes (`input_number.myszolot_max_price_threshold`) | Yes (`charge_start_soc`) | Cheapest hours in smart horizon (48h) |
+| `smart` | 80% (config) | Yes (`input_number.myszolot_max_price_threshold`) | Yes (`charge_start_soc`) | Cheapest hours in smart horizon (48h). Leaving **override** arms an **8 s** pending switch; re-select **override** cancels and keeps the existing deadline/target (no replan). |
 | `override` | Helper target % | **No** (price cap ignored) | **No** | Cheapest hours within locked deadline |
 
 Override auto-resets to `smart` when target is reached or the deadline ends.

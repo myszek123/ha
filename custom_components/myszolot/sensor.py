@@ -88,6 +88,7 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "charge_amps": d.get("charge_amps", 0),
             "charge_rate_kw": d.get("charge_rate_kw", 0.0),
             "mode": d.get("mode", "smart"),
+            "pending_smart": d.get("pending_smart", False),
             "current_price": d.get("current_price", 0.0),
             "current_soc": d.get("current_soc", 0.0),
             "target_soc": d.get("target_soc", 80),

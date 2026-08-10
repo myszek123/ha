@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.storage import Store
 
 from .const import (
@@ -24,7 +24,7 @@ from .const import (
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
     DEFAULT_OVERRIDE_DEADLINE_MINUTES, DEFAULT_MIN_FLAT_AMPS,
-    DEFAULT_CAR_LIMIT_REPLAN,
+    DEFAULT_CAR_LIMIT_REPLAN, MODE_PENDING_SMART_SECONDS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_DEADLINE_MINUTES,
     INPUT_NUMBER_MIN_SOC, INPUT_NUMBER_MAX_PRICE_THRESHOLD,
@@ -700,10 +700,21 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._awaiting_default_since: datetime | None = None
         # How long to pin target to default while waiting for car write (asleep car)
         self._awaiting_default_timeout = timedelta(minutes=15)
+        # Override → smart: short pending window so a quick re-tap of override
+        # cancels without full replan (keeps remaining deadline/target).
+        self._pending_smart: bool = False
+        self._pending_smart_unsub: Any = None
+        # Test hook: callable set when arming; tests call it to simulate timer
+        self._pending_smart_fire: Any = None
 
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def pending_smart(self) -> bool:
+        """True while override→smart is armed (re-select override to cancel)."""
+        return self._pending_smart
 
     def _read_helper_int(self, entity_id: str, default: int) -> int:
         state = self.hass.states.get(entity_id)
@@ -826,17 +837,35 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         """Select smart (default) or override (locked target + absolute deadline).
 
         Button / UI select of override = full replan: target + fresh window
-        (now + hours/minutes helper). HA restart restores the *persisted*
-        absolute deadline and does not call set_mode — so restart ≠ button.
+        (now + hours/minutes helper), **except** when a pending smart
+        transition is armed — then override re-tap only cancels smart and
+        keeps the existing deadline/target (no replan).
+
+        Override → smart is delayed by MODE_PENDING_SMART_SECONDS so a
+        mis-tap can be undone. Automatic resets (deadline/target reached)
+        still call ``_reset_to_smart`` immediately.
+
+        HA restart restores the *persisted* absolute deadline and does not
+        call set_mode — so restart ≠ button.
         """
         if mode not in (MODE_SMART, MODE_OVERRIDE):
             _LOGGER.warning("Unknown mode %s; ignoring", mode)
             return
 
-        prev = self._mode
         now = datetime.now()
 
         if mode == MODE_OVERRIDE:
+            # Pending smart + override again = cancel only (keep session)
+            if self._pending_smart:
+                self._cancel_pending_smart(reason="override re-selected")
+                _LOGGER.info(
+                    "Cancelled pending smart; staying in override "
+                    "(target=%s deadline=%s, no replan)",
+                    self._override_target_soc,
+                    self._override_deadline,
+                )
+                return
+
             target = max(50, min(100, self._read_helper_int(
                 INPUT_NUMBER_CUSTOM_TARGET_SOC, DEFAULT_TARGET_SOC
             )))
@@ -844,7 +873,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._mode = MODE_OVERRIDE
             self._override_deadline_minutes = minutes
             self._override_target_soc = target
-            # Always full replan on button hit (even if already in override)
+            # Always full replan on intentional override button (not cancel path)
             self._override_deadline = now + timedelta(minutes=minutes)
             self._charging_started = False
             _LOGGER.info(
@@ -857,20 +886,77 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             # from re-adopting a stale % when the car comes home later.
             if self._feature_car_limit_replan():
                 self._schedule_set_car_charge_limit(target, restore_default=False)
-        else:
-            self._mode = MODE_SMART
-            self._override_target_soc = None
-            self._override_deadline = None
-            self._override_deadline_minutes = None
-            if mode != prev:
-                self._charging_started = False
-            self._schedule_persist_override()
-            if mode != prev and self._feature_car_limit_replan():
-                default_t = int(self._cfg().get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC))
-                self._schedule_set_car_charge_limit(default_t, restore_default=True)
+            return
+
+        # mode == SMART
+        if self._mode == MODE_OVERRIDE:
+            # Delay so user can re-tap override and cancel without replan
+            self._arm_pending_smart()
+            return
+        # Already smart — clear any stale pending + ensure storage is smart/empty
+        self._cancel_pending_smart()
+        self._schedule_persist_override()
+
+    def _cancel_pending_smart(self, *, reason: str = "") -> bool:
+        """Cancel armed override→smart. Returns True if one was pending."""
+        had = self._pending_smart
+        self._pending_smart = False
+        self._pending_smart_fire = None
+        unsub = self._pending_smart_unsub
+        self._pending_smart_unsub = None
+        if unsub is not None:
+            try:
+                unsub()
+            except Exception:  # noqa: BLE001 — HA unsub shapes vary
+                pass
+        if had and reason:
+            _LOGGER.info("Pending smart cancelled (%s)", reason)
+        return had
+
+    def _arm_pending_smart(self) -> None:
+        """Start MODE_PENDING_SMART_SECONDS timer; override re-tap cancels."""
+        self._cancel_pending_smart()
+        self._pending_smart = True
+        delay = float(MODE_PENDING_SMART_SECONDS)
+
+        @callback
+        def _fire(_now=None) -> None:
+            self._pending_smart_unsub = None
+            self._pending_smart_fire = None
+            if not self._pending_smart:
+                return
+            self._pending_smart = False
+            if self._mode != MODE_OVERRIDE:
+                return
+            self._apply_smart_from_user("pending smart confirmed after delay")
+            try:
+                self.hass.async_create_task(self.async_request_refresh())
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._pending_smart_fire = _fire
+        try:
+            self._pending_smart_unsub = async_call_later(self.hass, delay, _fire)
+        except Exception:  # noqa: BLE001 — tests without full HA event loop
+            _LOGGER.debug(
+                "async_call_later unavailable; pending smart armed for manual fire"
+            )
+        _LOGGER.info(
+            "Pending smart armed for %ss (re-select override to cancel, no replan)",
+            MODE_PENDING_SMART_SECONDS,
+        )
+
+    def _apply_smart_from_user(self, reason: str) -> None:
+        """User-confirmed (or timer) transition to smart."""
+        prev = self._mode
+        self._reset_to_smart(reason)
+        if prev == MODE_OVERRIDE and self._feature_car_limit_replan():
+            default_t = int(self._cfg().get(CONF_DEFAULT_TARGET_SOC, DEFAULT_TARGET_SOC))
+            self._schedule_set_car_charge_limit(default_t, restore_default=True)
 
     def _reset_to_smart(self, reason: str) -> None:
         _LOGGER.info("Resetting mode to smart (%s)", reason)
+        self._cancel_pending_smart()
         self._mode = MODE_SMART
         self._override_target_soc = None
         self._override_deadline = None
@@ -907,6 +993,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
     async def async_unload(self) -> None:
         """Unregister all state-change listeners."""
+        self._cancel_pending_smart()
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
@@ -935,14 +1022,11 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         voltage: int = cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
         feature_car_limit = self._feature_car_limit_replan()
 
-        tesla_current_state = self.hass.states.get(NUMBER_CHARGE_CURRENT)
-        tesla_amps_raw = _parse_float(tesla_current_state)
-        # Never plan below fast_amps — car entity often stuck at 5 A and collapsed
-        # the whole schedule/flatten to a crawl (and false unfeasible targets).
-        if tesla_amps_raw and tesla_amps_raw > 0:
-            charge_amps = max(int(tesla_amps_raw), int(fast_amps))
-        else:
-            charge_amps = int(fast_amps)
+        # Wall planning rate = configured fast_amps only.
+        # Do NOT take max(tesla_amps, fast_amps): car entity often sits at 16 A
+        # when idle and inflated plan rate / brief target_amps 13–14.
+        # Floor is fast_amps itself — stuck car 5 A must not collapse the plan.
+        charge_amps = max(1, int(fast_amps))
         max_charge_rate_kW: float = charge_amps * voltage * charger_phases / 1000
 
         now = datetime.now()
@@ -1171,6 +1255,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             charging_started=self._charging_started,
             feasible=feasible,
         )
+        # Hard ceiling: never publish wall target above configured fast_amps
+        if target_amps is not None and int(target_amps) > charge_amps:
+            target_amps = charge_amps
 
         if reason == REASON_SCHEDULED:
             self._charging_started = True
@@ -1208,6 +1295,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         return {
             "mode": self._mode,
+            "pending_smart": self._pending_smart,
             "reason": reason,
             "should_charge": should_charge,
             "target_amps": target_amps,

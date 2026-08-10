@@ -1,0 +1,57 @@
+# Warn when charge mode is chosen but the main actuator automation is off
+# (plan updates, Autel never moves — same class of failure as 09-08).
+
+- id: myszolot_actuator_disabled_on_mode
+  alias: Myszolot - Actuator off when mode selected
+  description: >
+    If select.myszolot_charge_mode changes (smart/override) while
+    automation.tesla_charging_actuator is off, notify that the selection
+    will not drive the Autel until the automation is re-enabled.
+  triggers:
+    - trigger: state
+      entity_id: select.myszolot_charge_mode
+  conditions:
+    - condition: template
+      value_template: >-
+        {{ trigger.to_state is not none
+           and trigger.to_state.state not in ['unknown', 'unavailable', none, '']
+           and (trigger.from_state is none
+                or trigger.to_state.state != trigger.from_state.state) }}
+    - condition: state
+      entity_id: automation.tesla_charging_actuator
+      state: "off"
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: charging actuator is OFF"
+        message: >-
+          Mode set to {{ states('select.myszolot_charge_mode') }}, but
+          "Tesla Charging - Main Automation" is disabled — Autel will not
+          start/stop. Re-enable automation.tesla_charging_actuator.
+  mode: single
+
+- id: myszolot_actuator_disabled_periodic
+  alias: Myszolot - Actuator off while charge planned
+  description: >
+    Periodic safety net: if planner wants charge (should_charge) but the
+    actuator automation is off, notify at most every 30 minutes.
+  triggers:
+    - trigger: time_pattern
+      minutes: "/30"
+  conditions:
+    - condition: state
+      entity_id: automation.tesla_charging_actuator
+      state: "off"
+    - condition: template
+      value_template: >-
+        {{ state_attr('sensor.myszolot_charge_reason', 'should_charge')
+           in [true, 1, 'true', 'True', 'on', 'yes'] }}
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: charging actuator is OFF"
+        message: >-
+          Planner wants charge now ({{ states('sensor.myszolot_charge_reason') }})
+          but main automation is disabled — car will not get home power.
+          Re-enable automation.tesla_charging_actuator.
+  mode: single

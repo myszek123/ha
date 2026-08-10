@@ -8,6 +8,10 @@
 # Behaviour:
 #   min_soc — emergency floor in all modes when cable is in
 #   max_price_threshold — smart mode only; override ignores the price cap
+#
+# Also used by automations (create via UI Helpers if missing):
+#   counter.myszolot_cable_reminders — max 5 cable plug-in push notifications
+#     per cable_needed cycle (reset when cable_needed → off)
 
 # input_number:
 #   myszolot_min_soc:
@@ -26,3 +30,11 @@
 #     unit_of_measurement: "PLN/kWh"
 #     mode: box
 #     initial: 1.0
+#
+# counter:
+#   myszolot_cable_reminders:
+#     name: Myszolot cable reminders
+#     minimum: 0
+#     maximum: 20
+#     step: 1
+#     initial: 0
