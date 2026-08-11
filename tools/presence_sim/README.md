@@ -4,8 +4,8 @@ House is **vacant ≥ 24h** when **both** personal phones are offline on Omada:
 
 | Phone | Omada name match | Person |
 |-------|------------------|--------|
-| S23 | `S23` | Jakub |
-| Z2 Flip | `Z2 Flip` | Sylwia |
+| S23 | `S23` / `J-s-S23` | Jakub |
+| Z8 Flip | `Z8 Flip` / `Galaxy-Z-Flip8` | Sylwia (not old Z2 Flip) |
 
 - Motion sensors **ignored** (false positives).
 - Company phones / other Omada clients **ignored**.

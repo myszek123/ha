@@ -4,7 +4,7 @@ Deterministic house vacancy (24h) + evening presence simulation.
 
 Vacant when BOTH personal phones are offline on Omada for >= VACANT_HOURS (24):
   - Jakub: Omada client name matching **S23**
-  - Sylwia: Omada client name matching **Z2 Flip**
+  - Sylwia: Omada client name matching **Z8 Flip** (Galaxy Z Flip8)
 
 Motion sensors are ignored (false positives). Company phones and other devices
 are ignored. Car is ignored.
@@ -73,10 +73,18 @@ REQUIRED_PHONES: list[dict[str, Any]] = [
         "patterns": ["s23"],  # Omada name "S23"
     },
     {
-        "id": "sylwia_z2",
+        "id": "sylwia_z8",
         "person": "sylwia",
-        "label": "Z2 Flip",
-        "patterns": ["z2 flip", "z2flip"],  # Omada name "Z2 Flip"
+        "label": "Z8 Flip",
+        # Omada: "Z8 Flip" / "Galaxy-Z-Flip8" — not Z2 Flip (old phone)
+        "patterns": [
+            "z8 flip",
+            "z8flip",
+            "galaxy-z-flip8",
+            "galaxy z flip8",
+            "galaxy-z-flip 8",
+            "flip8",
+        ],
     },
 ]
 
@@ -321,7 +329,7 @@ class PhoneStatus:
 def resolve_required_phones(
     live: list[dict], insight: list[dict]
 ) -> list[PhoneStatus]:
-    """Resolve S23 + Z2 Flip only from Omada live + insight client lists."""
+    """Resolve S23 + Z8 Flip only from Omada live + insight client lists."""
     live_by_mac = {(c.get("mac") or "").upper(): c for c in live}
     out: list[PhoneStatus] = []
 
@@ -401,12 +409,12 @@ class VacancyReport:
     evaluated_at: str = ""
     s23_online: bool | None = None
     s23_age_h: float | None = None
-    z2_online: bool | None = None
-    z2_age_h: float | None = None
+    z8_online: bool | None = None
+    z8_age_h: float | None = None
 
 
 def evaluate_vacancy() -> VacancyReport:
-    """Vacant iff S23 and Z2 Flip both offline ≥ VACANT_HOURS (no motion checks)."""
+    """Vacant iff S23 and Z8 Flip both offline ≥ VACANT_HOURS (no motion checks)."""
     hours = vacant_hours()
     reasons: list[str] = []
     blocking: list[str] = []
@@ -447,12 +455,12 @@ def evaluate_vacancy() -> VacancyReport:
     vacant = len(blocking) == 0 and len(phones) == len(REQUIRED_PHONES)
     if vacant:
         reasons = [
-            f"S23 + Z2 Flip both offline ≥ {hours:.0f}h (Omada only; motion ignored)"
+            f"S23 + Z8 Flip both offline ≥ {hours:.0f}h (Omada only; motion ignored)"
         ]
 
     by_id = {p.phone_id: p for p in phones}
     s23 = by_id.get("jakub_s23")
-    z2 = by_id.get("sylwia_z2")
+    z8 = by_id.get("sylwia_z8")
 
     return VacancyReport(
         vacant=vacant,
@@ -463,8 +471,8 @@ def evaluate_vacancy() -> VacancyReport:
         evaluated_at=now_utc().isoformat(),
         s23_online=s23.online if s23 and s23.found else None,
         s23_age_h=round(s23.age_hours, 2) if s23 and s23.age_hours is not None else None,
-        z2_online=z2.online if z2 and z2.found else None,
-        z2_age_h=round(z2.age_hours, 2) if z2 and z2.age_hours is not None else None,
+        z8_online=z8.online if z8 and z8.found else None,
+        z8_age_h=round(z8.age_hours, 2) if z8 and z8.age_hours is not None else None,
     )
 
 
@@ -483,8 +491,11 @@ def push_vacancy_to_ha(
         "vacant_hours_required": report.vacant_hours_required,
         "s23_online": report.s23_online,
         "s23_age_h": report.s23_age_h,
-        "z2_online": report.z2_online,
-        "z2_age_h": report.z2_age_h,
+        "z8_online": report.z8_online,
+        "z8_age_h": report.z8_age_h,
+        # legacy attr names (dashboard transition)
+        "z2_online": report.z8_online,
+        "z2_age_h": report.z8_age_h,
         "phones": report.phones,
         "phones_blocking": report.phones_blocking,
         "reasons": report.reasons,

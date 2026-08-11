@@ -270,10 +270,10 @@ sections:
         {% set s23a = state_attr(''binary_sensor.house_vacant_24h'', ''s23_age_h'')
         %}
 
-        {% set z2o = state_attr(''binary_sensor.house_vacant_24h'', ''z2_online'')
+        {% set z8o = state_attr(''binary_sensor.house_vacant_24h'', ''z8_online'')
         %}
 
-        {% set z2a = state_attr(''binary_sensor.house_vacant_24h'', ''z2_age_h'')
+        {% set z8a = state_attr(''binary_sensor.house_vacant_24h'', ''z8_age_h'')
         %}
 
         ### Presence / vacant home
@@ -308,8 +308,8 @@ sections:
         - **S23** (Jakub): {% if s23o == true %}online{% elif s23o == false %}offline
         {{ s23a }}h{% else %}?{% endif %}
 
-        - **Z2 Flip** (Sylwia): {% if z2o == true %}online{% elif z2o == false %}offline
-        {{ z2a }}h{% else %}?{% endif %}
+        - **Z8 Flip** (Sylwia): {% if z8o == true %}online{% elif z8o == false %}offline
+        {{ z8a }}h{% else %}?{% endif %}
 
         {% if on_dl %}
 
