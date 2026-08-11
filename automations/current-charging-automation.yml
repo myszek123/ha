@@ -2,11 +2,11 @@ alias: Tesla Charging - Main Automation
 description: >
   Reads should_charge / target_amps from sensor.myszolot_charge_reason and drives
   home charging. Home power is gated only on the Autel (charge_control + max current,
-  hard cap 12 A). Amp down-ramp is 1 A per minute (time_pattern); ramp-up jumps to
-  target so sessions start promptly. The Tesla charge switch is never turned off —
-  only turned on when a session should start (car must request charge). Stop/away
-  only disable Autel so public/supercharger sessions are never interrupted. Presence
-  = garage vision + GPS not contradicting. State-guarded. Scheduling in myszolot.
+  hard cap 11 A — house shared load). Always set Autel to target (no amp slew).
+  The Tesla charge switch is never turned off — only turned on when a session should
+  start (car must request charge). Stop/away only disable Autel so public/supercharger
+  sessions are never interrupted. Presence = garage vision + GPS not contradicting.
+  State-guarded. Scheduling lives in the myszolot coordinator.
 triggers:
   - entity_id: sensor.myszolot_charge_reason
     trigger: state
@@ -68,43 +68,29 @@ actions:
               - action: switch.turn_on
                 target:
                   entity_id: switch.autel_charge_control
-          # Autel max: raise instantly to desired; lower by 1 A per trigger (~1/min).
-          # Avoids mid-session jumps 12→5 that correlated with SuspendedEVSE thrash.
-          - variables:
-              desired_amps: >-
-                {{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 12] | min }}
-              current_amps: "{{ states('number.autel_maximum_current') | int(-1) }}"
-              next_amps: >-
-                {% set d = desired_amps | int %}
-                {% set c = current_amps | int %}
-                {% if c < 0 %}{{ d }}
-                {% elif c < d %}{{ d }}
-                {% elif c > d %}{{ c - 1 }}
-                {% else %}{{ c }}
-                {% endif %}
           - if:
               - condition: template
                 value_template: >-
-                  {{ (current_amps | int(-1)) != (next_amps | int(-1))
-                     and (next_amps | int(-1)) >= 0 }}
+                  {{ (states('number.autel_maximum_current') | int(-1))
+                     != ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 11] | min) }}
             then:
               - action: number.set_value
                 target:
                   entity_id: number.autel_maximum_current
                 data:
-                  value: "{{ next_amps | int }}"
+                  value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 11] | min }}"
           - if:
               - condition: template
                 value_template: >-
                   {{ is_state('device_tracker.myszolot_location', 'home')
                      and (states('number.myszolot_charge_current') | int(0))
-                     < ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 12] | min) }}
+                     < ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 11] | min) }}
             then:
               - action: number.set_value
                 target:
                   entity_id: number.myszolot_charge_current
                 data:
-                  value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 12] | min }}"
+                  value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 11] | min }}"
           - if:
               - condition: template
                 value_template: >-

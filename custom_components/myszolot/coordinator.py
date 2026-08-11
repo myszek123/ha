@@ -23,7 +23,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY_KWH, DEFAULT_TARGET_SOC,
     DEFAULT_MIN_SOC, DEFAULT_CHARGE_START_SOC, DEFAULT_MAX_PRICE_THRESHOLD,
     DEFAULT_SMART_DEADLINE_HOURS, DEFAULT_OVERRIDE_DEADLINE_HOURS,
-    DEFAULT_OVERRIDE_DEADLINE_MINUTES, DEFAULT_MIN_FLAT_AMPS,
+    DEFAULT_OVERRIDE_DEADLINE_MINUTES,
     DEFAULT_CAR_LIMIT_REPLAN, MODE_PENDING_SMART_SECONDS,
     INPUT_BOOLEAN_LOCATION_OVERRIDE, INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS, INPUT_NUMBER_DEADLINE_MINUTES,
@@ -258,7 +258,7 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
                 "slots": group,
                 "total_kWh": round(sum(s["kWh"] for s in group), 4),
                 "total_cost": round(sum(s["cost"] for s in group), 4),
-                "amps": None,  # filled by flatten_sessions
+                "amps": None,  # filled by assign_session_amps
                 "flattened": False,
             }
         )
@@ -266,115 +266,15 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
     return sessions
 
 
-def flatten_sessions(
-    sessions: list[dict],
-    charge_amps: int,
-    now_dt: datetime,
-    min_flat_amps: int = DEFAULT_MIN_FLAT_AMPS,
-    hard_end: datetime | None = None,
-) -> list[dict]:
-    """
-    Second pass: lower continuous amps inside already-selected hours.
-
-    Pass 1 packs energy at full rate. Pass 2 expands each continuous group to
-    the hour-span of those slots (no new price hours) and drops amps.
-
-    hard_end: absolute cap (override wall-clock deadline). Flatten must never
-    invent a longer window than this — that was the “still 2h left → 6A” bug.
-    """
-    if charge_amps <= 0 or not sessions:
-        return sessions
-
-    min_a = max(1, min(int(min_flat_amps), int(charge_amps)))
+def assign_session_amps(sessions: list[dict], charge_amps: int) -> list[dict]:
+    """Stamp every session with full wall rate (no mid-session amp flatten)."""
+    a = max(1, int(charge_amps))
     out: list[dict] = []
-
     for sess in sessions:
-        slots = sess.get("slots") or []
-        if not slots:
-            s = dict(sess)
-            s["amps"] = charge_amps
-            s["flattened"] = False
-            out.append(s)
-            continue
-
-        first_hour = int(slots[0]["hour"])
-        last_hour = int(slots[-1]["hour"])
-        # Full hour-boundary window of hours already chosen by the knapsack
-        first_hour_start = sess["start"].replace(minute=0, second=0, microsecond=0)
-        window_start = first_hour_start
-        window_end = first_hour_start + timedelta(hours=(last_hour - first_hour + 1))
-        # Never stretch past absolute override deadline
-        if hard_end is not None and window_end > hard_end:
-            window_end = hard_end
-
-        ws = window_start
-        if now_dt > ws:
-            ws = now_dt.replace(second=0, microsecond=0)
-        if ws >= window_end:
-            s = dict(sess)
-            s["amps"] = charge_amps
-            s["flattened"] = False
-            out.append(s)
-            continue
-
-        need_minutes = float(sum(int(sl["minutes"]) for sl in slots))
-        avail_minutes = (window_end - ws).total_seconds() / 60.0
-        if avail_minutes <= 0:
-            s = dict(sess)
-            s["amps"] = charge_amps
-            s["flattened"] = False
-            out.append(s)
-            continue
-
-        # No slack in selected hours → keep packed full-rate session
-        if avail_minutes <= need_minutes + 0.5:
-            s = dict(sess)
-            s["amps"] = charge_amps
-            s["flattened"] = False
-            if hard_end is not None and s["end"] > hard_end:
-                s["end"] = hard_end
-            if s["end"] <= s["start"]:
-                s["end"] = s["start"] + timedelta(minutes=1)
-            out.append(s)
-            continue
-
-        raw_amps = charge_amps * need_minutes / avail_minutes
-        flat_amps = int(raw_amps)  # floor: never exceed planned energy rate
-
-        if flat_amps < min_a:
-            # Do not go below min_a: shorter block inside the window at min_a
-            flat_amps = min_a
-            duration = need_minutes * charge_amps / flat_amps
-            if duration >= avail_minutes - 0.5:
-                flat_amps = max(
-                    min_a,
-                    min(charge_amps, int(charge_amps * need_minutes / avail_minutes) or min_a),
-                )
-                start, end = ws, window_end
-            else:
-                start = ws
-                end = ws + timedelta(minutes=duration)
-        elif flat_amps >= charge_amps:
-            s = dict(sess)
-            s["amps"] = charge_amps
-            s["flattened"] = False
-            if hard_end is not None and s["end"] > hard_end:
-                s["end"] = hard_end
-            out.append(s)
-            continue
-        else:
-            start, end = ws, window_end
-
-        if hard_end is not None and end > hard_end:
-            end = hard_end
-        flat_amps = max(min_a, min(charge_amps, int(flat_amps)))
         s = dict(sess)
-        s["start"] = start
-        s["end"] = end
-        s["amps"] = flat_amps
-        s["flattened"] = flat_amps < charge_amps
+        s["amps"] = a
+        s["flattened"] = False
         out.append(s)
-
     return out
 
 
@@ -1043,19 +943,16 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                     )
 
         # Target / deadline for current mode (before car-limit feature)
-        hard_end: datetime | None = None
         helper_override_target = self._read_helper_int(
             INPUT_NUMBER_CUSTOM_TARGET_SOC, default_target_soc
         )
         if mode == MODE_OVERRIDE:
             if self._override_deadline is not None:
-                hard_end = self._override_deadline
                 remaining_h = (self._override_deadline - now).total_seconds() / 3600.0
                 # Fractional hours for max_energy / price append; never invent a full extra hour
                 deadline_hours = max(1 / 60.0, remaining_h)
             else:
                 mins = self._read_deadline_minutes()
-                hard_end = now + timedelta(minutes=mins)
                 deadline_hours = mins / 60.0
             use_price_cap = False
         else:
@@ -1172,7 +1069,6 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             target_soc = default_target_soc
             deadline_hours = smart_deadline_hours
             use_price_cap = True
-            hard_end = None
 
         # Session complete (any mode): restore daily default charge limit on car
         if (
@@ -1228,14 +1124,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             plan = uncapped if mode == MODE_OVERRIDE else (
                 capped if use_price_cap else uncapped
             )
-            # Pass 1: sessions at full rate from the plan slots
-            sessions = compute_sessions(plan, now.date())
-            # Pass 2: flatten inside selected hours; override never past absolute end
-            sessions = flatten_sessions(
-                sessions,
-                charge_amps,
-                now,
-                hard_end=hard_end if mode == MODE_OVERRIDE else None,
+            # Sessions at full wall rate (fast_amps). No amp-flatten second pass.
+            sessions = assign_session_amps(
+                compute_sessions(plan, now.date()), charge_amps
             )
 
         reason, should_charge, target_amps = determine_reason(

@@ -8,7 +8,7 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 
 - **Smart (default)**: Always-on daily charging to 80% using cheapest hours; skips new sessions when SoC is already high enough (≥ `charge_start_soc`); hard price stop above threshold
 - **Override**: Temporary plan — charge to a chosen SoC **within N hours** (default 24h) using the cheapest hours, **no price hard-stop**; auto-returns to smart when target is hit or the window ends
-- **Amp flatten**: after packing energy at full rate into the cheapest hours, lower continuous amps to fill those same hours only (no spill into costlier slots; floor **5 A**; emergency min-SoC still full rate)
+- **Fixed wall rate**: plan and charge at configured **`fast_amps` (default 11 A)** in the cheapest selected hours — no mid-session amp flatten
 - **Car charge-limit replan** (feature flag, **default ON**): change target SoC on the Tesla → replan (override keeps absolute deadline); when target is reached, restore car limit to **80%** for the next session. Disable under Configure if unwanted.
 - **Feasibility warnings**: Surfaces max reachable SoC at current amps when the target cannot be met in time
 - **Battery health**: Emergency min-SoC floor; daily charge-start debounce
@@ -98,7 +98,7 @@ If a helper is missing, the integration falls back to the config-entry values be
 |---|---|---|
 | `charger_phases` | 3 | 1 or 3-phase charger |
 | `voltage` | 230 V | Line-to-neutral voltage |
-| `fast_amps` | 12 A | Fallback charging current if Tessie amps unavailable |
+| `fast_amps` | 11 A | Wall planning + command rate (shared house load; Autel hard-capped to match) |
 | `battery_capacity_kWh` | 68.9 | Total usable battery capacity |
 | `default_target_soc` | 80% | Smart mode daily target |
 | `min_soc` | 30% | Fallback emergency floor if `input_number.myszolot_min_soc` missing |

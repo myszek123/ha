@@ -9,7 +9,7 @@ from custom_components.myszolot.coordinator import (
     build_schedule,
     build_asap_schedule,
     compute_sessions,
-    flatten_sessions,
+    assign_session_amps,
     is_in_session,
     next_session,
     session_target_amps,
@@ -325,62 +325,18 @@ def test_next_session_empty():
     assert next_session([], datetime(2024, 1, 15, 10, 0)) is None
 
 
-# ── flatten_sessions ──────────────────────────────────────────────────────────
+# ── assign_session_amps ───────────────────────────────────────────────────────
 
-def test_flatten_expands_partial_into_full_hour_span():
-    """
-    12 kWh @ 10 kWh/h max → 72 min at full rate in hours 13–14.
-    Flatten before the window: use 13:00–15:00 (120 min) → amps scale 12 * 72/120 = 7.2 → 7A.
-    """
+def test_assign_session_amps_sets_full_rate():
     schedule = [
         {"hour": 13, "minutes": 12, "kWh": 2.0, "cost": 1.0, "full": False},
         {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 2.5, "full": True},
     ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 10, 0)  # before window
-    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
-    assert len(flat) == 1
-    s = flat[0]
-    assert s["flattened"] is True
-    assert s["start"] == datetime(2024, 1, 15, 13, 0)
-    assert s["end"] == datetime(2024, 1, 15, 15, 0)
-    assert s["amps"] == 7  # int(12 * 72/120)
-    assert session_target_amps(flat, datetime(2024, 1, 15, 13, 30), 12) == 7
-    assert session_target_amps(flat, datetime(2024, 1, 15, 10, 0), 12) == 12
-
-
-def test_flatten_no_slack_keeps_full_rate():
-    """Two full hours at full rate → no slack → stay packed at charge_amps."""
-    schedule = [
-        {"hour": 13, "minutes": 60, "kWh": 10.0, "cost": 5.0, "full": True},
-        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 4.0, "full": True},
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 10, 0)
-    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
-    assert len(flat) == 1
-    s = flat[0]
-    assert s["flattened"] is False
-    assert s["amps"] == 12
-    assert s["start"] == datetime(2024, 1, 15, 13, 0)
-    assert s["end"] == datetime(2024, 1, 15, 15, 0)
-
-
-def test_flatten_respects_min_flat_amps():
-    """Tiny energy in a 2h window would want very low A → clamp to min_flat_amps."""
-    schedule = [
-        {"hour": 13, "minutes": 6, "kWh": 1.0, "cost": 0.5, "full": False},
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    # packed: 13:54–14:00 (6 min)
-    now = datetime(2024, 1, 15, 10, 0)
-    flat = flatten_sessions(sessions, charge_amps=12, now_dt=now, min_flat_amps=6)
-    s = flat[0]
-    assert s["amps"] >= 6
-    assert s["amps"] <= 12
-    # Window is hour 13 only (60 min); 6 min need → raw 1.2A → min 6A shorter block
-    assert s["end"] <= datetime(2024, 1, 15, 14, 0)
-    assert (s["end"] - s["start"]).total_seconds() / 60 <= 60
+    sessions = assign_session_amps(compute_sessions(schedule, TODAY), 11)
+    assert len(sessions) == 1
+    assert sessions[0]["amps"] == 11
+    assert sessions[0]["flattened"] is False
+    assert session_target_amps(sessions, datetime(2024, 1, 15, 13, 30), 11) == 11
 
 
 # ── build_asap_schedule ───────────────────────────────────────────────────────
@@ -402,18 +358,3 @@ def test_asap_starts_now_not_later_hour():
     assert next_session(sessions, now) is None
 
 
-def test_flatten_respects_hard_end_deadline():
-    """Flatten must not invent window past absolute override deadline."""
-    schedule = [
-        {"hour": 13, "minutes": 12, "kWh": 2.0, "cost": 1.0, "full": False},
-        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 2.5, "full": True},
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 13, 30, 0)
-    # Absolute end 14:00 — not full hour-span to 15:00
-    hard_end = datetime(2024, 1, 15, 14, 0, 0)
-    flat = flatten_sessions(
-        sessions, charge_amps=12, now_dt=now, min_flat_amps=5, hard_end=hard_end
-    )
-    s = flat[0]
-    assert s["end"] <= hard_end

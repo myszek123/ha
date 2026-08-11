@@ -1,7 +1,7 @@
 """
 End-to-end charging scenarios from real production incidents.
 
-Glue: build_schedule → compute_sessions → flatten → determine_reason
+Glue: build_schedule → compute_sessions → assign_session_amps → determine_reason
 plus override set_mode / restore. Failures here = don't redeploy trust.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from custom_components.myszolot.coordinator import (
     build_schedule,
     build_asap_schedule,
     compute_sessions,
-    flatten_sessions,
+    assign_session_amps,
     is_in_session,
     next_session,
     session_target_amps,
@@ -33,108 +33,33 @@ from custom_components.myszolot.const import (
     REASON_TARGET_REACHED,
     REASON_SOC_SUFFICIENT,
     REASON_NO_ELIGIBLE_HOURS,
-    DEFAULT_MIN_FLAT_AMPS,
     INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS,
     INPUT_NUMBER_DEADLINE_MINUTES,
 )
 
 TODAY = date(2024, 1, 15)
-MAX_KWH = 8.28  # ~12 A × 230 × 3 / 1000
+MAX_KWH = 7.59  # ~11 A × 230 × 3 / 1000
 
 
 def prices(*pairs: tuple[int, float]) -> list[dict]:
     return [{"hour": h, "price": p} for h, p in pairs]
 
 
-# ── Incident: 6A drop / inventing spare window ───────────────────────────────
+# ── Full-rate sessions (no amp flatten) ──────────────────────────────────────
 
-def test_hard_end_stops_flatten_inventing_spare_time():
-    """
-    Incident: remaining energy ~35 min @12A but flatten opened ~70 min → 6A.
-    Absolute deadline must cap the window so amps stay high when time is short.
-    """
-    schedule = [
-        {"hour": 12, "minutes": 12, "kWh": 2.0, "cost": 1.0, "full": False},
-        {"hour": 13, "minutes": 60, "kWh": 10.0, "cost": 5.0, "full": True},
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 12, 30)
-    wide = flatten_sessions(sessions, 12, now, min_flat_amps=5, hard_end=None)
-    hard = datetime(2024, 1, 15, 13, 0)
-    tight = flatten_sessions(sessions, 12, now, min_flat_amps=5, hard_end=hard)
-    assert tight[0]["end"] <= hard
-    # Tight window → higher amps and/or shorter end than invent-to-14:00
-    assert tight[0]["amps"] >= wide[0]["amps"] or tight[0]["end"] < wide[0]["end"]
-
-
-def test_flatten_can_produce_mid_range_amps_not_only_6_11_12():
-    """Any integer in [min_flat, charge_amps] is allowed — not a whitelist."""
-    # need 36 min @12A in a 60 min single-hour window → floor(12*36/60)=7
-    schedule = [{"hour": 14, "minutes": 36, "kWh": 6.0, "cost": 2.0, "full": False}]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 10, 0)  # before window → full hour 14:00–15:00
-    flat = flatten_sessions(sessions, 12, now, min_flat_amps=5)
-    assert flat[0]["amps"] == 7
-    assert DEFAULT_MIN_FLAT_AMPS <= flat[0]["amps"] <= 12
-
-
-def test_incident_style_half_rate_when_window_twice_need():
-    """
-    need 35 min, window ~70 min → floor(12*35/70)=6 — the 6A formula.
-
-    Also: hard_end must never let end go past the absolute wall-clock deadline.
-    """
-    # Two cheap hours selected, only 35 min of energy total
+def test_assign_session_amps_always_full_rate():
+    """Every planned session stamps fixed wall amps; never mid-range flatten."""
     schedule = [
         {"hour": 13, "minutes": 20, "kWh": 3.0, "cost": 1.0, "full": False},
         {"hour": 14, "minutes": 15, "kWh": 2.0, "cost": 1.0, "full": False},
     ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 13, 0)
-
-    # Wide: 13:00–15:00 span → floor hits min_flat
-    wide = flatten_sessions(sessions, 12, now, min_flat_amps=5)
-    assert wide[0]["amps"] == 5
-    assert wide[0]["flattened"] is True
-
-    # ~70 min window → classic 6A (need 35 / avail 70)
-    hard_70 = datetime(2024, 1, 15, 14, 10)
-    mid = flatten_sessions(sessions, 12, now, min_flat_amps=5, hard_end=hard_70)
-    assert mid[0]["end"] <= hard_70
-    assert mid[0]["amps"] == 6
-
-    # Tight window (~50 min) → higher amps, still ≤ hard_end
-    hard_50 = datetime(2024, 1, 15, 13, 50)
-    tight = flatten_sessions(sessions, 12, now, min_flat_amps=5, hard_end=hard_50)
-    assert tight[0]["end"] <= hard_50
-    assert tight[0]["amps"] >= mid[0]["amps"]
-
-
-def test_flatten_amps_always_within_floor_and_charge_amps():
-    """Never command below min_flat or above charge_amps (Autel ≤12)."""
-    schedule = [
-        {"hour": h, "minutes": m, "kWh": 1.0, "cost": 0.1, "full": False}
-        for h, m in ((12, 5), (13, 5), (14, 5))
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    now = datetime(2024, 1, 15, 12, 0)
-    for min_flat, charge in ((5, 12), (6, 12), (5, 11)):
-        flat = flatten_sessions(sessions, charge, now, min_flat_amps=min_flat)
-        for s in flat:
-            assert min_flat <= s["amps"] <= charge
-
-
-def test_flatten_no_slack_keeps_full_charge_amps():
-    """Full hours at capacity → stay at charge_amps (no phantom 6A)."""
-    schedule = [
-        {"hour": 13, "minutes": 60, "kWh": 10.0, "cost": 5.0, "full": True},
-        {"hour": 14, "minutes": 60, "kWh": 10.0, "cost": 4.0, "full": True},
-    ]
-    sessions = compute_sessions(schedule, TODAY)
-    flat = flatten_sessions(sessions, 12, datetime(2024, 1, 15, 10, 0), min_flat_amps=5)
-    assert flat[0]["amps"] == 12
-    assert flat[0]["flattened"] is False
+    sessions = assign_session_amps(compute_sessions(schedule, TODAY), 11)
+    assert len(sessions) == 1
+    assert sessions[0]["amps"] == 11
+    assert sessions[0]["flattened"] is False
+    now = datetime(2024, 1, 15, 13, 5)
+    assert session_target_amps(sessions, now, 11) == 11
 
 
 # ── Override: cheapest in window, may wait ───────────────────────────────────
@@ -588,7 +513,7 @@ def test_full_pipeline_override_respects_absolute_end():
         deadline_hours=2, max_price=None,
     )
     sessions = compute_sessions(schedule, TODAY)
-    sessions = flatten_sessions(sessions, 12, now, min_flat_amps=5, hard_end=hard_end)
+    sessions = assign_session_amps(sessions, 12)
     for s in sessions:
         assert s["end"] <= hard_end + timedelta(seconds=1)
 
@@ -606,7 +531,7 @@ def test_pipeline_smart_price_cap_then_wait_or_charge():
     assert all(s["price"] <= 1.0 if "price" in s else True for s in schedule)
     assert all(s["hour"] >= 12 for s in schedule)  # expensive 10–11 skipped via cap
     sessions = compute_sessions(schedule, TODAY)
-    sessions = flatten_sessions(sessions, 12, now, min_flat_amps=5)
+    sessions = assign_session_amps(sessions, 12)
     assert is_in_session(sessions, now) is False
     reason, should, _ = determine_reason(
         mode=MODE_SMART,
@@ -642,7 +567,7 @@ def test_pipeline_smart_price_cap_then_wait_or_charge():
     )
     assert reason2 == REASON_SCHEDULED
     assert should2 is True
-    assert 5 <= amps2 <= 12
+    assert amps2 == 12  # session stamped full rate
 
 
 def test_target_soc_gate_when_not_in_session():
@@ -748,19 +673,16 @@ def test_realistic_override_two_hour_window_knapsack():
     now = datetime(2024, 1, 15, 18, 0)
     # Evening: 18 expensive, 19 cheap
     all_prices = prices((18, 0.9), (19, 0.35), (20, 0.4), (21, 0.5))
-    # Need ~8 kWh (about 1h)
+    # Need ~1h of energy at wall rate → only cheapest hour in window
     schedule = build_schedule(
-        all_prices, E_needed=8.0, max_kWh_per_hour=MAX_KWH, now_dt=now,
+        all_prices, E_needed=MAX_KWH * 0.9, max_kWh_per_hour=MAX_KWH, now_dt=now,
         deadline_hours=2, max_price=None,
     )
     hours = {s["hour"] for s in schedule}
     assert 19 in hours
     assert 18 not in hours  # waits for cheaper hour 19 within 2h
     sessions = compute_sessions(schedule, TODAY)
-    sessions = flatten_sessions(
-        sessions, 12, now, min_flat_amps=5,
-        hard_end=now + timedelta(hours=2),
-    )
+    sessions = assign_session_amps(sessions, 11)
     for s in sessions:
         assert s["end"] <= now + timedelta(hours=2) + timedelta(seconds=1)
     assert is_in_session(sessions, now) is False

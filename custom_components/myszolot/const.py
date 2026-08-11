@@ -42,7 +42,7 @@ CONF_CAR_LIMIT_REPLAN = "car_limit_replan"
 # Defaults
 DEFAULT_CHARGER_PHASES = 3
 DEFAULT_VOLTAGE = 230
-DEFAULT_FAST_AMPS = 12
+DEFAULT_FAST_AMPS = 11
 DEFAULT_BATTERY_CAPACITY_KWH = 68.9
 DEFAULT_TARGET_SOC = 80
 DEFAULT_MIN_SOC = 30
@@ -51,8 +51,6 @@ DEFAULT_MAX_PRICE_THRESHOLD = 1.0
 DEFAULT_SMART_DEADLINE_HOURS = 48
 DEFAULT_OVERRIDE_DEADLINE_HOURS = 24
 DEFAULT_OVERRIDE_DEADLINE_MINUTES = 120
-# Floor when flattening amps inside selected cheap hours (still ≤ charge_amps)
-DEFAULT_MIN_FLAT_AMPS = 5
 # Default ON — disable via Configure if car→HA limit coupling is unwanted
 DEFAULT_CAR_LIMIT_REPLAN = True
 # Override → smart: wait this long so a quick re-tap of override cancels (no replan)
