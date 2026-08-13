@@ -7,6 +7,17 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.5] — 13-08-2026
+
+### Fixed
+
+- **Mid-session Autel Remote-off** (13-08 overnight): remaining-energy replan
+  tail-packed the current hour (e.g. start 02:33 while now was 02:31) →
+  `waiting_for_session` → actuator off → stop notifications. Live sessions now
+  start at **now** in the current hour and **hold** for up to 5 min if start
+  slides. Planned gaps to a later cheap hour are unchanged. ~1% SoC miss at
+  the end is accepted.
+
 ## [1.5.4] — 11-08-2026
 
 ### Changed

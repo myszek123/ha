@@ -62,6 +62,90 @@ def test_assign_session_amps_always_full_rate():
     assert session_target_amps(sessions, now, 11) == 11
 
 
+def test_replan_in_current_hour_starts_now_not_tail():
+    """Incident 13-08: remaining minutes shrink → start 02:33 while now is 02:31.
+
+    Without now_dt, tail-pack opens a 2 min gap (actuator Remote-off).
+    With now_dt, start snaps to now so the block stays continuous.
+    """
+    # ~27 min left in hour 2 + more later
+    schedule = [
+        {"hour": 2, "minutes": 27, "kWh": 3.4, "cost": 1.0, "full": False},
+        {"hour": 3, "minutes": 60, "kWh": 7.6, "cost": 2.0, "full": True},
+    ]
+    now = datetime(2026, 8, 13, 2, 31)
+    ref = now.date()
+    packed = compute_sessions(schedule, ref)
+    assert packed[0]["start"] == datetime(2026, 8, 13, 2, 33)
+    assert is_in_session(packed, now) is False
+
+    live = compute_sessions(schedule, ref, now_dt=now)
+    assert live[0]["start"] == datetime(2026, 8, 13, 2, 31)
+    assert is_in_session(live, now) is True
+
+
+def test_hold_keeps_charging_if_start_slides_two_minutes():
+    """Already charging: 5 min hold covers a 2 min start slide."""
+    from custom_components.myszolot.coordinator import is_holding_session
+
+    sessions = [{
+        "start": datetime(2026, 8, 13, 2, 33),
+        "end": datetime(2026, 8, 13, 4, 0),
+        "amps": 11,
+    }]
+    now = datetime(2026, 8, 13, 2, 31)
+    assert is_in_session(sessions, now) is False
+    assert is_holding_session(sessions, now) is True
+    reason, should, amps = determine_reason(
+        mode=MODE_OVERRIDE,
+        is_home=True,
+        cable_connected=True,
+        current_soc=54,
+        target_soc=70,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=11,
+        sessions=sessions,
+        now_dt=now,
+        E_needed=10.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,
+    )
+    assert reason == REASON_SCHEDULED
+    assert should is True
+    assert amps == 11
+
+
+def test_hold_does_not_bridge_to_later_cheap_hour():
+    """Real planned gap (next session 1h later) must still wait."""
+    from custom_components.myszolot.coordinator import is_holding_session
+
+    sessions = [{
+        "start": datetime(2026, 8, 13, 4, 0),
+        "end": datetime(2026, 8, 13, 5, 0),
+        "amps": 11,
+    }]
+    now = datetime(2026, 8, 13, 3, 1)
+    assert is_holding_session(sessions, now) is False
+    reason, should, _ = determine_reason(
+        mode=MODE_OVERRIDE,
+        is_home=True,
+        cable_connected=True,
+        current_soc=62,
+        target_soc=70,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=11,
+        sessions=sessions,
+        now_dt=now,
+        E_needed=5.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,
+    )
+    assert should is False
+    assert reason == REASON_WAITING_FOR_SESSION
+
+
 # ── Override: cheapest in window, may wait ───────────────────────────────────
 
 def test_override_picks_cheapest_hour_not_asap():

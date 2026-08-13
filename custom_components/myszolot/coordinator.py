@@ -214,12 +214,18 @@ def max_reachable_soc(
     return round(min(100.0, float(current_soc) + max_kWh / battery_kWh * 100.0), 1)
 
 
-def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
+def compute_sessions(
+    schedule: list[dict],
+    ref_date: date_type,
+    now_dt: datetime | None = None,
+) -> list[dict]:
     """
     Group adjacent hours into continuous charging sessions.
 
-    A partial first slot in a group is shifted to the tail of that hour so
-    charging within the group is uninterrupted.
+    A partial first slot in a *future* hour is shifted to the tail of that hour.
+    If that hour is *now*, start at ``now`` instead — otherwise a mid-session
+    replan (SoC ticked, remaining minutes shrink) parks start 1–2 min in the
+    future and the actuator Remote-stops the Autel.
     """
     if not schedule:
         return []
@@ -233,6 +239,10 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
             groups.append(current_group)
             current_group = [slot]
     groups.append(current_group)
+
+    now_floor = None
+    if now_dt is not None:
+        now_floor = now_dt.replace(second=0, microsecond=0)
 
     sessions: list[dict] = []
     for group in groups:
@@ -248,6 +258,14 @@ def compute_sessions(schedule: list[dict], ref_date: date_type) -> list[dict]:
             actual_date.year, actual_date.month, actual_date.day,
             actual_hour, start_minute,
         )
+        # Already in this hour: do not invent a gap until the tail-packed start
+        if (
+            now_floor is not None
+            and start.date() == now_floor.date()
+            and start.hour == now_floor.hour
+            and start > now_floor
+        ):
+            start = now_floor
         total_minutes = sum(s["minutes"] for s in group)
         end = start + timedelta(minutes=total_minutes)
 
@@ -292,6 +310,21 @@ def session_target_amps(sessions: list[dict], now_dt: datetime, default_amps: in
 def is_in_session(sessions: list[dict], now_dt: datetime) -> bool:
     """Return True if now_dt falls within any charging session."""
     return any(s["start"] <= now_dt < s["end"] for s in sessions)
+
+
+def is_holding_session(
+    sessions: list[dict],
+    now_dt: datetime,
+    *,
+    slack_minutes: int = 5,
+) -> bool:
+    """True if a planned block has not ended and starts within slack.
+
+    Covers 1–2 min start slides after a replan so a live session stays on.
+    Does not bridge a real gap to a later cheap hour (start still far away).
+    """
+    slack = timedelta(minutes=max(0, int(slack_minutes)))
+    return any(now_dt < s["end"] and now_dt + slack >= s["start"] for s in sessions)
 
 
 def next_session(sessions: list[dict], now_dt: datetime) -> dict | None:
@@ -497,7 +530,9 @@ def determine_reason(
             return REASON_SOC_SUFFICIENT, False, 0
         if schedule_all_prices_above_max:
             return REASON_PRICE_TOO_HIGH, False, 0
-        if is_in_session(sessions, now_dt):
+        if is_in_session(sessions, now_dt) or (
+            charging_started and is_holding_session(sessions, now_dt)
+        ):
             return REASON_SCHEDULED, True, session_target_amps(
                 sessions, now_dt, charge_amps
             )
@@ -510,7 +545,9 @@ def determine_reason(
 
     # 5. Override — reach target within deadline; no price hard-stop, no SoC debounce
     if mode == MODE_OVERRIDE:
-        if is_in_session(sessions, now_dt):
+        if is_in_session(sessions, now_dt) or (
+            charging_started and is_holding_session(sessions, now_dt)
+        ):
             return REASON_SCHEDULED, True, session_target_amps(
                 sessions, now_dt, charge_amps
             )
@@ -1126,7 +1163,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             )
             # Sessions at full wall rate (fast_amps). No amp-flatten second pass.
             sessions = assign_session_amps(
-                compute_sessions(plan, now.date()), charge_amps
+                compute_sessions(plan, now.date(), now_dt=now), charge_amps
             )
 
         reason, should_charge, target_amps = determine_reason(
