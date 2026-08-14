@@ -217,15 +217,14 @@ def max_reachable_soc(
 def compute_sessions(
     schedule: list[dict],
     ref_date: date_type,
-    now_dt: datetime | None = None,
 ) -> list[dict]:
     """
     Group adjacent hours into continuous charging sessions.
 
-    A partial first slot in a *future* hour is shifted to the tail of that hour.
-    If that hour is *now*, start at ``now`` instead — otherwise a mid-session
-    replan (SoC ticked, remaining minutes shrink) parks start 1–2 min in the
-    future and the actuator Remote-stops the Autel.
+    Knapsack already filled cheapest hours first. A partial slot on the
+    *earliest* hour of a group is the leftover more-expensive energy — park it
+    at the **tail** of that hour so the block runs continuously into the cheap
+    hours (e.g. 16 min of hour 12 + full 13–14 → 12:44–15:00, not 12:00–14:16).
     """
     if not schedule:
         return []
@@ -239,10 +238,6 @@ def compute_sessions(
             groups.append(current_group)
             current_group = [slot]
     groups.append(current_group)
-
-    now_floor = None
-    if now_dt is not None:
-        now_floor = now_dt.replace(second=0, microsecond=0)
 
     sessions: list[dict] = []
     for group in groups:
@@ -258,14 +253,6 @@ def compute_sessions(
             actual_date.year, actual_date.month, actual_date.day,
             actual_hour, start_minute,
         )
-        # Already in this hour: do not invent a gap until the tail-packed start
-        if (
-            now_floor is not None
-            and start.date() == now_floor.date()
-            and start.hour == now_floor.hour
-            and start > now_floor
-        ):
-            start = now_floor
         total_minutes = sum(s["minutes"] for s in group)
         end = start + timedelta(minutes=total_minutes)
 
@@ -1186,7 +1173,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             )
             # Sessions at full wall rate (fast_amps). No amp-flatten second pass.
             sessions = assign_session_amps(
-                compute_sessions(plan, now.date(), now_dt=now), charge_amps
+                compute_sessions(plan, now.date()), charge_amps
             )
 
         reason, should_charge, target_amps = determine_reason(

@@ -62,26 +62,39 @@ def test_assign_session_amps_always_full_rate():
     assert session_target_amps(sessions, now, 11) == 11
 
 
-def test_replan_in_current_hour_starts_now_not_tail():
-    """Incident 13-08: remaining minutes shrink → start 02:33 while now is 02:31.
+def test_tail_pack_expensive_remainder_before_cheap_hours():
+    """14-08: fill 13–14 fully, leftover ~16 min of hour 12 at the tail → 12:44–15:00.
 
-    Without now_dt, tail-pack opens a 2 min gap (actuator Remote-off).
-    With now_dt, start snaps to now so the block stays continuous.
+    Must NOT start at 12:00 (snap-to-now was the regression).
     """
-    # ~27 min left in hour 2 + more later
     schedule = [
-        {"hour": 2, "minutes": 27, "kWh": 3.4, "cost": 1.0, "full": False},
-        {"hour": 3, "minutes": 60, "kWh": 7.6, "cost": 2.0, "full": True},
+        {"hour": 12, "minutes": 16, "kWh": 2.0, "cost": 1.2, "full": False},
+        {"hour": 13, "minutes": 60, "kWh": 7.6, "cost": 3.0, "full": True},
+        {"hour": 14, "minutes": 60, "kWh": 7.6, "cost": 3.1, "full": True},
     ]
-    now = datetime(2026, 8, 13, 2, 31)
-    ref = now.date()
-    packed = compute_sessions(schedule, ref)
-    assert packed[0]["start"] == datetime(2026, 8, 13, 2, 33)
-    assert is_in_session(packed, now) is False
-
-    live = compute_sessions(schedule, ref, now_dt=now)
-    assert live[0]["start"] == datetime(2026, 8, 13, 2, 31)
-    assert is_in_session(live, now) is True
+    ref = datetime(2026, 8, 14).date()
+    s = compute_sessions(schedule, ref)[0]
+    assert s["start"] == datetime(2026, 8, 14, 12, 44)
+    assert s["end"] == datetime(2026, 8, 14, 15, 0)
+    noon = datetime(2026, 8, 14, 12, 0)
+    assert is_in_session([s], noon) is False
+    reason, should, _ = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=55,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=11,
+        sessions=assign_session_amps([s], 11),
+        now_dt=noon,
+        E_needed=17.2,
+        schedule_all_prices_above_max=False,
+        charging_started=False,
+    )
+    assert should is False
+    assert reason == REASON_WAITING_FOR_SESSION
 
 
 def test_hold_keeps_charging_if_start_slides_two_minutes():

@@ -7,6 +7,17 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.7] — 14-08-2026
+
+### Fixed
+
+- **Plan geometry restored:** cheapest hours filled first; leftover more-expensive
+  minutes sit at the **tail** of the earlier hour so the block is continuous
+  (today should have been ~12:44–15:00, not start at 12:00). The 1.5.5
+  snap-to-now in the current hour was wrong and started sessions early.
+- Still **lock** a block once it has actually started (1.5.6) so a replan
+  cannot Remote-off mid-session.
+
 ## [1.5.6] — 14-08-2026
 
 ### Fixed

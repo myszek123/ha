@@ -153,14 +153,6 @@ def test_compute_sessions_single_partial_slot():
     assert s["end"] == datetime(2024, 1, 15, 15, 0)
 
 
-def test_compute_sessions_current_hour_starts_now_not_tail():
-    schedule = [{"hour": 14, "minutes": 36, "kWh": 6.0, "cost": 2.4, "full": False}]
-    now = datetime(2024, 1, 15, 14, 10)
-    s = compute_sessions(schedule, TODAY, now_dt=now)[0]
-    assert s["start"] == datetime(2024, 1, 15, 14, 10)
-    assert s["end"] == datetime(2024, 1, 15, 14, 46)
-
-
 def test_compute_sessions_key_scenario_12kwh():
     """
     12 kWh needed, 10 kWh/h max.
