@@ -8,7 +8,7 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 
 - **Smart (default)**: Always-on daily charging to 80% using cheapest hours; skips new sessions when SoC is already high enough (≥ `charge_start_soc`); hard price stop above threshold
 - **Override**: Temporary plan — charge to a chosen SoC **within N hours** (default 24h) using the cheapest hours, **no price hard-stop**; auto-returns to smart when target is hit or the window ends
-- **Fixed wall rate**: plan and charge at configured **`fast_amps` (default 11 A)** in the cheapest selected hours — no mid-session amp flatten
+- **Fixed wall rate**: plan and charge at **`fast_amps` (11 A)**. Cheapest hours filled first; leftover dearer minutes sit at the **tail** of the earlier hour so the block is continuous (e.g. 12:44–15:00, not 12:00–14:16)
 - **Car charge-limit replan** (feature flag, **default ON**): change target SoC on the Tesla → replan (override keeps absolute deadline); when target is reached, restore car limit to **80%** for the next session. Disable under Configure if unwanted.
 - **Feasibility warnings**: Surfaces max reachable SoC at current amps when the target cannot be met in time
 - **Battery health**: Emergency min-SoC floor; daily charge-start debounce
