@@ -505,6 +505,7 @@ def determine_reason(
     is_externally_charging: bool = False,
     charging_started: bool = False,
     feasible: bool = True,
+    locked_session_end: datetime | None = None,
 ) -> tuple[str, bool, int]:
     """
     Determine the charging reason, whether to charge, and target amps.
@@ -536,6 +537,15 @@ def determine_reason(
             return REASON_SCHEDULED, True, session_target_amps(
                 sessions, now_dt, charge_amps
             )
+        # Locked contiguous block (started this run) — do not drop the current
+        # hour because a re-knapsack prefers later cheaper slots.
+        if (
+            charging_started
+            and locked_session_end is not None
+            and now_dt < locked_session_end
+            and E_needed > 0
+        ):
+            return REASON_SCHEDULED, True, charge_amps
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
@@ -551,6 +561,13 @@ def determine_reason(
             return REASON_SCHEDULED, True, session_target_amps(
                 sessions, now_dt, charge_amps
             )
+        if (
+            charging_started
+            and locked_session_end is not None
+            and now_dt < locked_session_end
+            and E_needed > 0
+        ):
+            return REASON_SCHEDULED, True, charge_amps
         ns = next_session(sessions, now_dt)
         if ns:
             return REASON_WAITING_FOR_SESSION, False, 0
@@ -625,6 +642,9 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._mode: str = MODE_SMART
         self._charging_started: bool = False
+        # End of the contiguous block we already started; knapsack must not
+        # abandon it mid-hour for a later cheaper slot.
+        self._locked_session_end: datetime | None = None
         # Locked when override is selected (target + absolute wall-clock deadline)
         self._override_target_soc: int | None = None
         self._override_deadline: datetime | None = None
@@ -813,6 +833,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             # Always full replan on intentional override button (not cancel path)
             self._override_deadline = now + timedelta(minutes=minutes)
             self._charging_started = False
+            self._locked_session_end = None
             _LOGGER.info(
                 "Override full replan: target=%d%% within %d min (deadline %s)",
                 target, minutes, self._override_deadline,
@@ -899,6 +920,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._override_deadline = None
         self._override_deadline_minutes = None
         self._charging_started = False
+        self._locked_session_end = None
         self._schedule_persist_override()
 
     async def async_setup(self) -> None:
@@ -1125,6 +1147,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         if current_soc >= target_soc:
             self._charging_started = False
+            self._locked_session_end = None
 
         E_needed = max(0.0, (target_soc - current_soc) / 100.0 * battery_kWh)
 
@@ -1182,6 +1205,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             is_externally_charging=is_externally_charging,
             charging_started=self._charging_started,
             feasible=feasible,
+            locked_session_end=self._locked_session_end,
         )
         # Hard ceiling: never publish wall target above configured fast_amps
         if target_amps is not None and int(target_amps) > charge_amps:
@@ -1189,6 +1213,16 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         if reason == REASON_SCHEDULED:
             self._charging_started = True
+            for s in sessions:
+                if s["start"] <= now < s["end"]:
+                    if (
+                        self._locked_session_end is None
+                        or s["end"] > self._locked_session_end
+                    ):
+                        self._locked_session_end = s["end"]
+                    break
+        elif self._locked_session_end is not None and now >= self._locked_session_end:
+            self._locked_session_end = None
 
         car_in_garage = _car_in_garage(self.hass, is_home_actual)
         cable_needed = should_charge and not cable_connected and car_in_garage

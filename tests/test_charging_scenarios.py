@@ -146,6 +146,66 @@ def test_hold_does_not_bridge_to_later_cheap_hour():
     assert reason == REASON_WAITING_FOR_SESSION
 
 
+def test_locked_session_keeps_charging_when_knapsack_drops_current_hour():
+    """Incident 14-08: at 12:12 knapsack preferred 13:00–15:00 and stopped Autel.
+
+    Once a contiguous block was started (lock end 14:16), keep charging.
+    """
+    later_only = [{
+        "start": datetime(2026, 8, 14, 13, 0),
+        "end": datetime(2026, 8, 14, 14, 59),
+        "amps": 11,
+    }]
+    now = datetime(2026, 8, 14, 12, 12)
+    locked = datetime(2026, 8, 14, 14, 16)
+    reason, should, amps = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=58,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=11,
+        sessions=later_only,
+        now_dt=now,
+        E_needed=15.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,
+        locked_session_end=locked,
+    )
+    assert reason == REASON_SCHEDULED
+    assert should is True
+    assert amps == 11
+
+
+def test_locked_session_expires_at_end():
+    later_only = [{
+        "start": datetime(2026, 8, 14, 15, 0),
+        "end": datetime(2026, 8, 14, 16, 0),
+        "amps": 11,
+    }]
+    now = datetime(2026, 8, 14, 14, 16)
+    reason, should, _ = determine_reason(
+        mode=MODE_SMART,
+        is_home=True,
+        cable_connected=True,
+        current_soc=70,
+        target_soc=80,
+        min_soc=30,
+        charge_start_soc=69,
+        charge_amps=11,
+        sessions=later_only,
+        now_dt=now,
+        E_needed=7.0,
+        schedule_all_prices_above_max=False,
+        charging_started=True,
+        locked_session_end=datetime(2026, 8, 14, 14, 16),
+    )
+    assert should is False
+    assert reason == REASON_WAITING_FOR_SESSION
+
+
 # ── Override: cheapest in window, may wait ───────────────────────────────────
 
 def test_override_picks_cheapest_hour_not_asap():

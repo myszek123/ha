@@ -7,6 +7,16 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.6] — 14-08-2026
+
+### Fixed
+
+- **Session abandoned mid-block** (14-08 ~12:12): smart knapsack replan dropped
+  the rest of the current hour (later slots cheaper for remaining kWh) → Autel
+  Remote-off while still short of target. Once a contiguous block starts, its
+  **end is locked** (may extend, never shrink) so charging runs through; real
+  gaps after that end still wait.
+
 ## [1.5.5] — 13-08-2026
 
 ### Fixed
