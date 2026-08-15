@@ -127,7 +127,7 @@ Override auto-resets to `smart` when target is reached or the deadline ends.
 ### Sensor: Charge Reason
 **Entity ID:** `sensor.myszolot_charge_reason`
 
-**State:** Current decision (e.g. `scheduled`, `waiting_for_session`, `soc_sufficient`, `target_unreachable`)
+**State:** Current decision (e.g. `scheduled`, `waiting_for_session`, `soc_sufficient`, `soc_unknown`, `target_unreachable`)
 
 **Key attributes:**
 
@@ -190,7 +190,8 @@ Actuated by automations from `sensor.myszolot_charge_reason`:
 - **Debounce:** if SoC already **>** `charge_start_soc` (69%), do not start a new daily plan (`soc_sufficient`)
 - **Price:** skip hours above `max_price_threshold` — wait longer for cheaper power
 - **Emergency:** if SoC &lt; `min_soc` and cable is in, charge immediately at full amps
-- **Once a session starts:** `charging_started` allows finishing through to 80% even past the debounce line
+- **Once a session starts:** `charging_started` allows finishing through to 80% even past the debounce line. The session ends — and its guards clear — when the car leaves or the cable comes out; a sensor going *unavailable* is not treated as either
+- **Unreadable SoC:** never guessed as 0% — reason `soc_unknown`, nothing is planned and the emergency floor does not fire (a running block keeps going)
 
 ### Override (temporary)
 

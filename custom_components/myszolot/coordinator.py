@@ -30,7 +30,8 @@ from .const import (
     INPUT_NUMBER_MIN_SOC, INPUT_NUMBER_MAX_PRICE_THRESHOLD,
     STORAGE_OVERRIDE_PLAN,
     REASON_OUTSIDE_CHARGING, REASON_OUTSIDE_NOT_CHARGING, REASON_TARGET_REACHED,
-    REASON_MIN_SOC_FLOOR, REASON_SOC_SUFFICIENT, REASON_PRICE_TOO_HIGH,
+    REASON_MIN_SOC_FLOOR, REASON_SOC_SUFFICIENT, REASON_SOC_UNKNOWN,
+    REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
     REASON_HOME_NOT_PLUGGED, REASON_TARGET_UNREACHABLE,
 )
@@ -450,6 +451,31 @@ def presence_allows_home_charge(
     return False  # garage off / empty
 
 
+def car_positively_away(
+    garage_state: str | None,
+    tracker_state: str | None,
+    location_override: bool,
+) -> bool:
+    """
+    True only when we *know* the car left — not merely "can't charge here".
+
+    Deliberately stricter than ``not presence_allows_home_charge``: it is used
+    to end a started session's guards, and a sensor blip (vision or tracker
+    unavailable) must never do that — clearing guards mid-session re-opens the
+    Remote-off incidents 1.5.5/1.5.6 fixed.
+    """
+    if location_override:
+        return False
+    garage = (garage_state or "").lower()
+    tracker = (tracker_state or "").lower()
+    if garage == "on":
+        return False  # vision sees the car in the spot
+    if garage in _UNAVAILABLE:
+        # No vision: only a tracker positively reporting elsewhere counts.
+        return tracker not in _UNAVAILABLE and tracker != "home"
+    return True  # vision says the spot is empty
+
+
 def should_reset_car_limit_after_session(
     *,
     feature_enabled: bool,
@@ -493,6 +519,7 @@ def determine_reason(
     charging_started: bool = False,
     feasible: bool = True,
     locked_session_end: datetime | None = None,
+    soc_known: bool = True,
 ) -> tuple[str, bool, int]:
     """
     Determine the charging reason, whether to charge, and target amps.
@@ -504,15 +531,28 @@ def determine_reason(
         reason = REASON_OUTSIDE_CHARGING if is_externally_charging else REASON_OUTSIDE_NOT_CHARGING
         return reason, False, 0
 
-    # 2. Home, no cable, SoC already at target
+    # 2. SoC unreadable — never act on a guessed 0 %. A sensor that drops to
+    # "unavailable" parses as 0.0 upstream, which used to look like an empty
+    # battery and trigger the emergency floor at any price. Nothing new starts;
+    # a block already running keeps its lock so this cannot cut power either.
+    if not soc_known:
+        if (
+            charging_started
+            and locked_session_end is not None
+            and now_dt < locked_session_end
+        ):
+            return REASON_SCHEDULED, True, charge_amps
+        return REASON_SOC_UNKNOWN, False, 0
+
+    # 3. Home, no cable, SoC already at target
     if not cable_connected and current_soc >= target_soc:
         return REASON_TARGET_REACHED, False, 0
 
-    # 3. Emergency: SoC below floor and cable plugged in
+    # 4. Emergency: SoC below floor and cable plugged in
     if current_soc < min_soc and cable_connected:
         return REASON_MIN_SOC_FLOOR, True, charge_amps
 
-    # 4. Smart (daily default) — price gate + charge_start_soc debounce
+    # 5. Smart (daily default) — price gate + charge_start_soc debounce
     if mode == MODE_SMART:
         if not charging_started and current_soc > charge_start_soc:
             return REASON_SOC_SUFFICIENT, False, 0
@@ -540,7 +580,7 @@ def determine_reason(
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
-    # 5. Override — reach target within deadline; no price hard-stop, no SoC debounce
+    # 6. Override — reach target within deadline; no price hard-stop, no SoC debounce
     if mode == MODE_OVERRIDE:
         if is_in_session(sessions, now_dt) or (
             charging_started and is_holding_session(sessions, now_dt)
@@ -564,7 +604,7 @@ def determine_reason(
             return REASON_NO_ELIGIBLE_HOURS, False, 0
         return REASON_TARGET_REACHED, False, 0
 
-    # 6. Fallback
+    # 7. Fallback
     return REASON_HOME_NOT_PLUGGED, False, 0
 
 
@@ -915,6 +955,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         await self._async_restore_override()
         tracked = [
             SENSOR_SOC,
+            SENSOR_CHARGING,   # so a live session is adopted promptly after restart
             BINARY_SENSOR_CABLE,
             BINARY_SENSOR_GARAGE_CAR,
             DEVICE_TRACKER,
@@ -1007,10 +1048,18 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         # External entity states (presence before car-limit adopt)
         soc_state = self.hass.states.get(SENSOR_SOC)
-        current_soc = _parse_float(soc_state) or 0.0
+        soc_raw = _parse_float(soc_state)
+        # Keep "unreadable" distinct from a real 0 %: an unavailable sensor must
+        # not look like an empty battery (that is the emergency-floor trapdoor).
+        soc_known = soc_raw is not None
+        current_soc = float(soc_raw) if soc_known else 0.0
 
         cable_state = self.hass.states.get(BINARY_SENSOR_CABLE)
-        cable_connected = cable_state is not None and cable_state.state == "on"
+        cable_raw = cable_state.state.lower() if cable_state is not None else ""
+        # Same tri-state for the cable: "unavailable" is not "unplugged", and
+        # only a positive unplug is allowed to end a session (see guards below).
+        cable_known = cable_raw not in _UNAVAILABLE
+        cable_connected = cable_raw == "on"
 
         location_state = self.hass.states.get(DEVICE_TRACKER)
         is_home_actual = location_state is not None and location_state.state == "home"
@@ -1025,6 +1074,22 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         is_home = presence_allows_home_charge(
             garage_state, tracker_state, location_override_active
         )
+
+        # ── Session guards: end of life ──────────────────────────────────────
+        # charging_started + locked_session_end describe ONE physical session at
+        # this cable. Driving away or unplugging ends it; without this the stale
+        # lock later forces a charge the fresh plan rejected, and the stuck
+        # started-flag disables the charge_start_soc debounce for good.
+        # Only a *positive* away/unplug counts — never a sensor blip.
+        if self._charging_started and (
+            car_positively_away(garage_state, tracker_state, location_override_active)
+            or (cable_known and not cable_connected)
+        ):
+            _LOGGER.info(
+                "Session ended (car away or cable out) — clearing started/lock guards"
+            )
+            self._charging_started = False
+            self._locked_session_end = None
 
         # Feature (flag, default ON): car charge limit replan — keep override window
         car_limit = self._read_car_charge_limit() if feature_car_limit else None
@@ -1094,6 +1159,22 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             and charging_state.state.lower() in ("charging", "on")
         )
 
+        # ── Session guards: adoption ─────────────────────────────────────────
+        # The guards live in RAM only, so an HA restart mid-block forgets that a
+        # session is running and the next replan can Remote-off the Autel (the
+        # 13-08 incident, re-opened by any update). If the car is physically
+        # charging at home, adopt it as started: the hold/lock logic then keeps
+        # it alive, and the lock is recorded as soon as a block contains now.
+        adopted_live_session = (
+            not self._charging_started
+            and is_home
+            and cable_connected
+            and is_externally_charging
+        )
+        if adopted_live_session:
+            _LOGGER.info("Adopting live charging session (guards were empty)")
+            self._charging_started = True
+
         all_prices = _parse_all_prices(price_state)
 
         # Append tomorrow prices when the window may span overnight
@@ -1136,7 +1217,12 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._charging_started = False
             self._locked_session_end = None
 
-        E_needed = max(0.0, (target_soc - current_soc) / 100.0 * battery_kWh)
+        # Unknown SoC ⇒ no plan at all (a 0 % guess would plan a full battery).
+        E_needed = (
+            max(0.0, (target_soc - current_soc) / 100.0 * battery_kWh)
+            if soc_known
+            else 0.0
+        )
 
         sessions: list[dict] = []
         schedule_all_prices_above_max = False
@@ -1176,6 +1262,24 @@ class MyszolotCoordinator(DataUpdateCoordinator):
                 compute_sessions(plan, now.date()), charge_amps
             )
 
+        # An adopted session has no lock (we never saw it start). If the fresh
+        # plan tail-packs the remaining energy later in *this* hour, bridge that
+        # gap instead of Remote-off'ing the car for a few minutes — same hour,
+        # same price, so it never costs more than the plan itself. A block that
+        # only starts in some later hour is left alone: that is a real wait.
+        if adopted_live_session and self._locked_session_end is None and sessions:
+            hour_end = (now + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            upcoming = [s for s in sessions if s["end"] > now]
+            nxt = min(upcoming, key=lambda s: s["start"]) if upcoming else None
+            if nxt is not None and nxt["start"] < hour_end:
+                self._locked_session_end = nxt["end"]
+                _LOGGER.info(
+                    "Adopted session bridged to %s (plan resumes at %s)",
+                    nxt["end"], nxt["start"],
+                )
+
         reason, should_charge, target_amps = determine_reason(
             mode=mode,
             is_home=is_home,
@@ -1193,6 +1297,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             charging_started=self._charging_started,
             feasible=feasible,
             locked_session_end=self._locked_session_end,
+            soc_known=soc_known,
         )
         # Hard ceiling: never publish wall target above configured fast_amps
         if target_amps is not None and int(target_amps) > charge_amps:
@@ -1251,7 +1356,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "cable_needed": cable_needed,
             "location_override_active": location_override_active,
             "current_price": current_price,
-            "current_soc": current_soc,
+            # None, not 0.0 — don't publish the guess the ladder refuses to use
+            "current_soc": current_soc if soc_known else None,
             "target_soc": target_soc,
             "default_target_soc": default_target_soc,
             "min_soc": min_soc,

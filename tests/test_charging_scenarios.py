@@ -33,9 +33,20 @@ from custom_components.myszolot.const import (
     REASON_TARGET_REACHED,
     REASON_SOC_SUFFICIENT,
     REASON_NO_ELIGIBLE_HOURS,
+    REASON_SOC_UNKNOWN,
     INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS,
     INPUT_NUMBER_DEADLINE_MINUTES,
+    INPUT_NUMBER_MIN_SOC,
+    INPUT_NUMBER_MAX_PRICE_THRESHOLD,
+    INPUT_BOOLEAN_LOCATION_OVERRIDE,
+    SENSOR_PRICE,
+    SENSOR_SOC,
+    SENSOR_CHARGING,
+    BINARY_SENSOR_CABLE,
+    BINARY_SENSOR_GARAGE_CAR,
+    DEVICE_TRACKER,
+    NUMBER_CHARGE_LIMIT,
 )
 
 TODAY = date(2024, 1, 15)
@@ -843,3 +854,190 @@ def test_realistic_override_two_hour_window_knapsack():
     for s in sessions:
         assert s["end"] <= now + timedelta(hours=2) + timedelta(seconds=1)
     assert is_in_session(sessions, now) is False
+
+
+
+_LADDER_DEFAULTS = dict(
+    mode=MODE_SMART,
+    is_home=True,
+    cable_connected=True,
+    current_soc=50.0,
+    target_soc=80,
+    min_soc=30,
+    charge_start_soc=69,
+    charge_amps=12,
+    sessions=[],
+    now_dt=datetime(2024, 1, 15, 10, 0),
+    E_needed=20.0,
+    schedule_all_prices_above_max=False,
+)
+
+
+def dr(**overrides) -> tuple:
+    """determine_reason with ladder defaults overridden per test."""
+    return determine_reason(**{**_LADDER_DEFAULTS, **overrides})
+
+
+# ── Session guard lifecycle (1.5.8) ──────────────────────────────────────────
+# Three field bugs, all in the wiring rather than the ladder, so these drive the
+# real _async_update_data instead of calling determine_reason directly.
+
+def _fake_hass_full(
+    *,
+    soc="62",
+    cable="on",
+    tracker="home",
+    garage="on",
+    charging="stopped",
+    car_limit="80",
+    cheap_now=True,
+):
+    """hass carrying every entity the update loop reads.
+
+    The price grid is built around the real clock (the loop uses datetime.now),
+    so `cheap_now` decides whether a planned block contains this moment.
+    """
+    import asyncio
+
+    hass = MagicMock()
+    hass.data = {}  # pstryk lookup iterates this
+    states = {}
+
+    def _state(eid, value, attributes=None):
+        states[eid] = SimpleNamespace(state=str(value), attributes=attributes or {})
+
+    now = datetime.now()
+    if cheap_now:
+        cheap = {h for h in (now.hour, now.hour + 1) if h < 24}
+    else:
+        cheap = {h for h in (now.hour + 3, now.hour + 4) if h < 24}
+    grid = [{"hour": h, "price": (0.10 if h in cheap else 5.00)} for h in range(24)]
+
+    _state(SENSOR_PRICE, 0.10 if cheap_now else 5.00, {"All prices": grid})
+    _state(SENSOR_SOC, soc)
+    _state(BINARY_SENSOR_CABLE, cable)
+    _state(DEVICE_TRACKER, tracker)
+    _state(BINARY_SENSOR_GARAGE_CAR, garage)
+    _state(SENSOR_CHARGING, charging)
+    _state(NUMBER_CHARGE_LIMIT, car_limit)
+    _state(INPUT_BOOLEAN_LOCATION_OVERRIDE, "off")
+    _state(INPUT_NUMBER_MIN_SOC, 30)
+    _state(INPUT_NUMBER_MAX_PRICE_THRESHOLD, 1.0)
+    _state(INPUT_NUMBER_CUSTOM_TARGET_SOC, 80)
+    _state(INPUT_NUMBER_DEADLINE_HOURS, 2)
+
+    hass.states.get = lambda eid: states.get(eid)
+
+    def _create_task(coro):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return None
+        return asyncio.ensure_future(coro)
+
+    hass.async_create_task = _create_task
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_guards_cleared_when_car_leaves_and_stale_lock_cannot_force_charge():
+    """Block starts → car unplugged and driven off → home again inside the old
+    block: the lock from the abandoned session must not charge against the new
+    plan (it forced 'scheduled' at an hour the planner had rejected)."""
+    coord = _make_coord(_fake_hass_full(), _FakeStore())
+
+    data = await coord._async_update_data()
+    assert data["reason"] == REASON_SCHEDULED
+    assert coord._charging_started is True
+    assert coord._locked_session_end is not None
+    lock_was = coord._locked_session_end
+
+    # Unplugged and gone (vision empty, tracker elsewhere)
+    coord.hass = _fake_hass_full(cable="off", garage="off", tracker="not_home")
+    await coord._async_update_data()
+    assert coord._charging_started is False
+    assert coord._locked_session_end is None
+
+    # Back home, plugged in, but the cheap window is hours away now
+    coord.hass = _fake_hass_full(cheap_now=False)
+    data = await coord._async_update_data()
+    assert datetime.now() < lock_was          # the old lock would still be live
+    assert data["reason"] != REASON_SCHEDULED
+    assert data["should_charge"] is False
+
+
+@pytest.mark.asyncio
+async def test_cable_sensor_blip_does_not_end_a_running_session():
+    """'unavailable' is not 'unplugged' — a blip must never clear the guards,
+    or it re-opens the mid-session Remote-off this suite exists to prevent."""
+    coord = _make_coord(_fake_hass_full(), _FakeStore())
+    await coord._async_update_data()
+    assert coord._charging_started is True
+
+    coord.hass = _fake_hass_full(cable="unavailable")
+    data = await coord._async_update_data()
+    assert coord._charging_started is True
+    assert coord._locked_session_end is not None
+    assert data["reason"] == REASON_SCHEDULED
+    assert data["should_charge"] is True
+
+
+@pytest.mark.asyncio
+async def test_restart_adopts_a_live_session_instead_of_cutting_it():
+    """HA restart mid-block: the guards are empty, so the SoC debounce applied
+    again and stopped a session already running at 75 %. A car physically
+    charging at home is adopted as started."""
+    coord = _make_coord(_fake_hass_full(soc="75", charging="charging"), _FakeStore())
+    assert coord._charging_started is False  # fresh process, as after a restart
+
+    data = await coord._async_update_data()
+    assert coord._charging_started is True
+    assert data["reason"] == REASON_SCHEDULED
+    assert data["should_charge"] is True
+
+    # Not charging → no adoption, and 75 % > charge_start_soc means skip.
+    fresh = _make_coord(_fake_hass_full(soc="75", charging="stopped"), _FakeStore())
+    data = await fresh._async_update_data()
+    assert fresh._charging_started is False
+    assert data["reason"] == REASON_SOC_SUFFICIENT
+
+
+@pytest.mark.asyncio
+async def test_unavailable_soc_does_not_trigger_the_emergency_floor():
+    """An unreadable SoC parsed as 0 % looked like an empty battery and charged
+    at full amps at any price. It must plan nothing instead."""
+    coord = _make_coord(_fake_hass_full(soc="unavailable"), _FakeStore())
+    data = await coord._async_update_data()
+    assert data["reason"] == REASON_SOC_UNKNOWN
+    assert data["should_charge"] is False
+    assert data["E_needed"] == 0.0
+    assert data["sessions"] == []
+
+
+def test_unknown_soc_blocks_the_floor_but_a_real_zero_still_charges():
+    """The fix must not disable genuine emergency charging."""
+    unknown = dr(
+        soc_known=False, current_soc=0.0, min_soc=30, cable_connected=True,
+        schedule_all_prices_above_max=True,
+    )
+    assert unknown == (REASON_SOC_UNKNOWN, False, 0)
+
+    real_zero = dr(
+        soc_known=True, current_soc=0.0, min_soc=30, cable_connected=True,
+        schedule_all_prices_above_max=True,
+    )
+    assert real_zero[0] == REASON_MIN_SOC_FLOOR
+    assert real_zero[1] is True
+
+
+def test_unknown_soc_never_cuts_a_locked_block():
+    """A blip mid-session keeps the block alive on its lock."""
+    reason, should, amps = dr(
+        soc_known=False, current_soc=0.0, cable_connected=True,
+        charging_started=True,
+        locked_session_end=datetime(2024, 1, 15, 15, 0),
+        now_dt=datetime(2024, 1, 15, 14, 0),
+    )
+    assert (reason, should) == (REASON_SCHEDULED, True)
+    assert amps == 12

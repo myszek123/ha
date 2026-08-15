@@ -7,6 +7,28 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.8] — 15-08-2026
+
+### Fixed
+
+- **Session guards now end with the session.** `charging_started` /
+  `locked_session_end` were only cleared when the target was reached, so a lock
+  from an abandoned block could force `scheduled` at an hour the fresh plan had
+  rejected, and the stuck flag disabled the `charge_start_soc` debounce for
+  good. Cleared when the car **positively** leaves or is **positively**
+  unplugged — a sensor going `unavailable` is not either, and must never end a
+  live session.
+- **Restart mid-session no longer cuts power.** The guards live in RAM only, so
+  after an HA restart a replan could Remote-off a running block (13-08 incident
+  class), and above the debounce line the session was dropped outright. A car
+  physically charging at home is now adopted as a started session; if the fresh
+  plan tail-packs the remaining energy later in the same hour, that gap is
+  bridged instead of switching the Autel off for a few minutes.
+- **Unreadable SoC is no longer a guessed 0%.** `unavailable` parsed to `0.0`
+  and looked like an empty battery, tripping the emergency floor at full amps
+  **at any price**. New reason `soc_unknown`: nothing is planned, the floor does
+  not fire, and a block already running keeps its lock. A real 0% still charges.
+
 ## [1.5.7] — 14-08-2026
 
 ### Fixed
