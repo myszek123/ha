@@ -153,8 +153,13 @@ Override auto-resets to `smart` when target is reached or the deadline ends.
 | `sensor.myszolot_expected_end_soc` | Projected end SoC from plan |
 | `sensor.myszolot_planned_session_duration` | Planned charge minutes |
 | `sensor.myszolot_max_reachable_soc` | Feasibility ceiling at full rate |
-| `sensor.myszolot_override_remaining` | Human-readable override timer (`Off` / `3h 20m`) |
+| `sensor.myszolot_override_remaining` | Human-readable override timer (`Off` / `3h 20m`), from the `override_remaining_minutes` attribute |
 | `binary_sensor.myszolot_cable_needed` | Cable reminder trigger |
+
+When the reason is `soc_sufficient` the plan attributes are **empty on purpose**:
+the cheapest hours were found but the debounce means they will not be used, so
+publishing them would show a session that never runs. They return as soon as the
+reason changes.
 
 ## External Entities (Read)
 

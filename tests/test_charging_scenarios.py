@@ -1041,3 +1041,39 @@ def test_unknown_soc_never_cuts_a_locked_block():
     )
     assert (reason, should) == (REASON_SCHEDULED, True)
     assert amps == 12
+
+
+# ── Plan display when the debounce skips the session (1.5.9) ─────────────────
+
+@pytest.mark.asyncio
+async def test_soc_sufficient_publishes_no_plan():
+    """SoC above charge_start_soc: the knapsack still finds cheap hours, but we
+    are not going to use them — the dashboard must not show a session."""
+    coord = _make_coord(_fake_hass_full(soc="76"), _FakeStore())
+    data = await coord._async_update_data()
+
+    assert data["reason"] == REASON_SOC_SUFFICIENT
+    assert data["should_charge"] is False
+    assert data["sessions"] == []
+    assert data["planned_session_start"] is None
+    assert data["planned_session_end"] is None
+    assert data["next_session_start"] is None
+    assert data["planned_kwh"] == 0
+    assert data["planned_cost"] == 0
+    assert data["planned_duration_minutes"] == 0
+    # Suppressing the plan is a choice, not a shortfall.
+    assert data["feasible"] is True
+    # The energy gap itself is still reported honestly.
+    assert data["E_needed"] > 0
+
+
+@pytest.mark.asyncio
+async def test_plan_returns_once_the_debounce_no_longer_applies():
+    """Same car below the debounce line: the plan is published again."""
+    coord = _make_coord(_fake_hass_full(soc="62"), _FakeStore())
+    data = await coord._async_update_data()
+
+    assert data["reason"] == REASON_SCHEDULED
+    assert data["sessions"] != []
+    assert data["planned_session_start"] is not None
+    assert data["planned_kwh"] > 0

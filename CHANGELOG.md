@@ -7,6 +7,31 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.9] — 16-08-2026
+
+### Changed
+
+- **No plan is published while `soc_sufficient`.** The knapsack still finds the
+  cheapest hours, but the debounce means they will not be used — showing
+  "13:39–14:00" for a session that never runs was confusing. Plan attributes
+  (`sessions`, `planned_session_start/end`, `planned_kwh`, `planned_cost`,
+  `planned_duration_minutes`, `next_session_start`) are empty in that state and
+  return as soon as the reason changes. `E_needed` still reports the real gap,
+  and a suppressed plan is no longer counted as unfeasible.
+
+### Removed
+
+- **Legacy `sensor.myszolot_charging_reason`** — a second, G12/threshold copy of
+  the charge decision, superseded by `sensor.myszolot_charge_reason`. Nothing
+  consumed it and it raised a template error on every restart (defaultless
+  `| float` on the retired `electricity_*_threshold` helpers).
+
+### Fixed
+
+- **Override timer works again.** `sensor.myszolot_override_remaining` read the
+  retired `input_boolean.myszolot_charge_override`, so the dashboard timer always
+  showed `Off`. It now reads the integration's `override_remaining_minutes`.
+
 ## [1.5.8] — 15-08-2026
 
 ### Fixed

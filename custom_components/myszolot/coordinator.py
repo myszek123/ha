@@ -1316,6 +1316,15 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         elif self._locked_session_end is not None and now >= self._locked_session_end:
             self._locked_session_end = None
 
+        # Debounce says skip this session (SoC above charge_start_soc), so the
+        # cheap hours the knapsack found will not be used. Publishing them reads
+        # as "charging tomorrow 13:39" on the dashboard for a session that will
+        # never run — show nothing instead. The plan comes back by itself as
+        # soon as the reason changes (SoC drops, override, car limit raised).
+        plan_suppressed = reason == REASON_SOC_SUFFICIENT
+        if plan_suppressed:
+            sessions = []
+
         car_in_garage = _car_in_garage(self.hass, is_home_actual)
         cable_needed = should_charge and not cable_connected and car_in_garage
         ns = next_session(sessions, now)
@@ -1325,8 +1334,10 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         planned_minutes = session_duration_minutes(sessions)
         exp_soc = expected_end_soc(current_soc, planned_kwh, battery_kWh, target_soc)
 
-        # If schedule exists but cannot hit target, mark unfeasible for UI
-        if E_needed > 0 and planned_kwh + 0.05 < E_needed:
+        # If schedule exists but cannot hit target, mark unfeasible for UI.
+        # A suppressed plan is a choice, not a shortfall — don't call it
+        # infeasible just because we deliberately published nothing.
+        if not plan_suppressed and E_needed > 0 and planned_kwh + 0.05 < E_needed:
             feasible = False
             if max_soc < float(target_soc):
                 max_soc = max_reachable_soc(current_soc, max_kwh_window, battery_kWh)
