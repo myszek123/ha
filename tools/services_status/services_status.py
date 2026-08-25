@@ -196,6 +196,25 @@ def collect_jobs() -> list[JobStatus]:
         )
     )
 
+    # buy-targets
+    bt_log = Path("/var/log/buy-targets.log")
+    bt_ts = log_mtime(bt_log)
+    jobs.append(
+        JobStatus(
+            id="buy_targets",
+            name="Buy targets",
+            path=str(root / "buy-targets"),
+            cron="0 7 * * 1-5 (weekdays)",
+            doc="https://github.com/myszek123/homelab-infra/blob/main/infra/docs/BUY-TARGETS.md",
+            state=classify_daily(bt_ts, max_hours=72),
+            last_run=fmt_ts(bt_ts),
+            detail=tail_fail_hint(bt_log) or "Yahoo vs Carlson buy-ins (3%)",
+            links={
+                "code": "https://github.com/myszek123/buy-targets",
+            },
+        )
+    )
+
     # 4parents-export
     f4_log = Path("/var/log/4parents-export.log")
     f4_ts = log_mtime(f4_log)

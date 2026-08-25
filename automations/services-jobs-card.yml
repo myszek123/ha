@@ -43,6 +43,8 @@ cards:
 
       | 4Parents export | 2nd 07:15 | [4PARENTS](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/4PARENTS-EXPORT.md) |
 
+      | Buy targets | weekdays 07:00 | [BUY-TARGETS](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/BUY-TARGETS.md) |
+
       | Monthly bills (EON+ekartoteka) | 1st 06:00 *on p330* | [SERVICES](https://github.com/myszek123/homelab-infra/blob/main/infra/docs/SERVICES.md) |
 
 
@@ -68,6 +70,10 @@ cards:
         entity: sensor.homelab_job_fourparents_export
         name: 4Parents
         icon: mdi:baby-face-outline
+      - type: tile
+        entity: sensor.homelab_job_buy_targets
+        name: Buy targets
+        icon: mdi:chart-line
       - type: tile
         entity: sensor.homelab_job_monthly_bills
         name: Monthly bills
