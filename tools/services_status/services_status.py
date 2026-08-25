@@ -198,13 +198,17 @@ def collect_jobs() -> list[JobStatus]:
 
     # buy-targets
     bt_log = Path("/var/log/buy-targets.log")
+    bt_weekly = Path("/var/log/buy-targets-weekly.log")
     bt_ts = log_mtime(bt_log)
+    bt_wts = log_mtime(bt_weekly)
+    if bt_wts and (bt_ts is None or bt_wts > bt_ts):
+        bt_ts = bt_wts
     jobs.append(
         JobStatus(
             id="buy_targets",
             name="Buy targets",
             path=str(root / "buy-targets"),
-            cron="0 7 * * 1-5 (weekdays)",
+            cron="0 7 * * 1-5 (weekdays); 0 8 * * 0 (weekly digest)",
             doc="https://github.com/myszek123/homelab-infra/blob/main/infra/docs/BUY-TARGETS.md",
             state=classify_daily(bt_ts, max_hours=72),
             last_run=fmt_ts(bt_ts),
