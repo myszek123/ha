@@ -34,6 +34,7 @@ from custom_components.myszolot.const import (
     REASON_SOC_SUFFICIENT,
     REASON_NO_ELIGIBLE_HOURS,
     REASON_SOC_UNKNOWN,
+    REASON_OUTSIDE_NOT_CHARGING,
     INPUT_NUMBER_CUSTOM_TARGET_SOC,
     INPUT_NUMBER_DEADLINE_HOURS,
     INPUT_NUMBER_DEADLINE_MINUTES,
@@ -43,6 +44,7 @@ from custom_components.myszolot.const import (
     SENSOR_PRICE,
     SENSOR_SOC,
     SENSOR_CHARGING,
+    SWITCH_AUTEL_CHARGE_CONTROL,
     BINARY_SENSOR_CABLE,
     BINARY_SENSOR_GARAGE_CAR,
     DEVICE_TRACKER,
@@ -889,6 +891,7 @@ def _fake_hass_full(
     tracker="home",
     garage="on",
     charging="stopped",
+    autel="off",
     car_limit="80",
     cheap_now=True,
 ):
@@ -919,6 +922,7 @@ def _fake_hass_full(
     _state(DEVICE_TRACKER, tracker)
     _state(BINARY_SENSOR_GARAGE_CAR, garage)
     _state(SENSOR_CHARGING, charging)
+    _state(SWITCH_AUTEL_CHARGE_CONTROL, autel)
     _state(NUMBER_CHARGE_LIMIT, car_limit)
     _state(INPUT_BOOLEAN_LOCATION_OVERRIDE, "off")
     _state(INPUT_NUMBER_MIN_SOC, 30)
@@ -965,6 +969,50 @@ async def test_guards_cleared_when_car_leaves_and_stale_lock_cannot_force_charge
     assert datetime.now() < lock_was          # the old lock would still be live
     assert data["reason"] != REASON_SCHEDULED
     assert data["should_charge"] is False
+
+
+@pytest.mark.asyncio
+async def test_vision_blip_does_not_kill_live_home_charge():
+    """20-08-2026 14:12: garage vision empty 30s while Tesla charging, Autel on,
+    GPS home. Must not go outside_charging or clear session guards — otherwise
+    soc_sufficient at 72% kills the rest of the cheap window."""
+    coord = _make_coord(
+        _fake_hass_full(soc="72", charging="charging", autel="on"),
+        _FakeStore(),
+    )
+    data = await coord._async_update_data()
+    assert data["reason"] == REASON_SCHEDULED
+    assert data["should_charge"] is True
+    assert coord._charging_started is True
+    lock_was = coord._locked_session_end
+    assert lock_was is not None
+
+    coord.hass = _fake_hass_full(
+        soc="72",
+        charging="charging",
+        autel="on",
+        garage="off",
+        tracker="home",
+    )
+    data = await coord._async_update_data()
+    assert data["reason"] == REASON_SCHEDULED
+    assert data["should_charge"] is True
+    assert coord._charging_started is True
+    assert coord._locked_session_end is not None
+
+
+@pytest.mark.asyncio
+async def test_vision_empty_without_live_charge_is_still_not_home():
+    """Start gate unchanged: vision empty + GPS home, but Tesla/Autel idle,
+    is not a home charge — do not invent a session."""
+    coord = _make_coord(
+        _fake_hass_full(soc="62", charging="stopped", autel="off", garage="off"),
+        _FakeStore(),
+    )
+    data = await coord._async_update_data()
+    assert data["should_charge"] is False
+    assert data["reason"] == REASON_OUTSIDE_NOT_CHARGING
+    assert coord._charging_started is False
 
 
 @pytest.mark.asyncio

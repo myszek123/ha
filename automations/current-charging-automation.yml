@@ -6,7 +6,9 @@ description: >
   The Tesla charge switch is never turned off — only turned on when a session should
   start (car must request charge). Stop/away only disable Autel so public/supercharger
   sessions are never interrupted. Presence = garage vision + GPS not contradicting.
-  State-guarded. Scheduling lives in the myszolot coordinator.
+  Live hold: Tesla charging + Autel on + GPS home must not Remote-off on a
+  vision-empty blip (20-08-2026 14:12). State-guarded. Scheduling lives in the
+  myszolot coordinator.
 triggers:
   - entity_id: sensor.myszolot_charge_reason
     trigger: state
@@ -100,11 +102,14 @@ actions:
               - action: switch.turn_on
                 target:
                   entity_id: switch.myszolot_charge
-      # Car away: lock Autel only
+      # Car away: lock Autel only — never on a live home charge (Tesla + Autel + GPS)
       - conditions:
           - condition: template
             value_template: >-
-              {{ not ((is_state('binary_sensor.garage_car_present', 'on')
+              {% set live_hold = states('sensor.myszolot_charging') in ['charging', 'starting', 'on']
+                  and is_state('switch.autel_charge_control', 'on')
+                  and is_state('device_tracker.myszolot_location', 'home') %}
+              {{ not live_hold and not ((is_state('binary_sensor.garage_car_present', 'on')
                        and (states('device_tracker.myszolot_location') in ['home', 'unknown', 'unavailable']
                             or is_state('input_boolean.myszolot_location_override', 'on')))
                       or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']

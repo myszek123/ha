@@ -7,6 +7,28 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.10] — 30-08-2026
+
+### Fixed
+
+- **Vision blip no longer kills a live home session** (20-08 ~14:12): garage
+  classifier went empty for 30 s (confidence 52 %) while Tesla was charging,
+  Autel was on, GPS home. Planner treated that as `outside_charging`, cleared
+  session guards, Autel Remote-off, then `soc_sufficient` at 72 % with cheap
+  minutes still left. A physical home charge (Tesla charging + Autel on + GPS
+  home) now holds `is_home` and the session guards; the actuator away branch
+  and Autel lockdown will not Remote-off in that state either. Starting a new
+  session still requires vision + GPS as before.
+
+### Changed
+
+- **Cable reminder arrival grace (3 min).** First plug-in ping waits until
+  garage vision has seen the car for 3 minutes (GPS `home` if vision is
+  unavailable). Covers 30-08 ~11:39: notify 9 s after pulling in, cable in
+  43 s later — a normal plug-in should stay silent. Already-home + cheap
+  hour starting still notifies immediately. Quiet hours and the 5/cycle cap
+  are unchanged.
+
 ## [1.5.9] — 16-08-2026
 
 ### Changed

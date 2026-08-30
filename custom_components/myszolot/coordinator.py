@@ -13,7 +13,8 @@ from homeassistant.helpers.storage import Store
 from .const import (
     DOMAIN,
     SENSOR_PRICE, SENSOR_SOC, BINARY_SENSOR_CABLE, BINARY_SENSOR_GARAGE_CAR,
-    DEVICE_TRACKER, SENSOR_CHARGING, NUMBER_CHARGE_CURRENT, NUMBER_CHARGE_LIMIT,
+    DEVICE_TRACKER, SENSOR_CHARGING, SWITCH_AUTEL_CHARGE_CONTROL,
+    NUMBER_CHARGE_CURRENT, NUMBER_CHARGE_LIMIT,
     MODE_SMART, MODE_OVERRIDE,
     CONF_CHARGER_PHASES, CONF_VOLTAGE, CONF_FAST_AMPS,
     CONF_BATTERY_CAPACITY_KWH, CONF_DEFAULT_TARGET_SOC,
@@ -438,7 +439,9 @@ def presence_allows_home_charge(
     Same presence gate as the main charging actuator start branch.
 
     Vision car present + GPS not contradicting, or vision unavailable + GPS home,
-    or force-home override.
+    or force-home override. Starting a new session still requires this.
+    A live home charge (Tesla + Autel + GPS) is overlaid separately via
+    ``live_home_charge_hold`` so a vision-empty blip cannot Remote-off.
     """
     if location_override:
         return True
@@ -451,10 +454,31 @@ def presence_allows_home_charge(
     return False  # garage off / empty
 
 
+def live_home_charge_hold(
+    tesla_charge_state: str | None,
+    autel_state: str | None,
+    tracker_state: str | None,
+) -> bool:
+    """
+    Physical home session in progress — garage vision empty must not stop it.
+
+    20-08-2026 14:12: classifier dropped to 52% / off for 30 s while Tesla was
+    charging, Autel was on, GPS home. Planner treated that as away, cleared
+    session guards, Autel Remote-off, then ``soc_sufficient`` at 72%.
+    """
+    tesla = (tesla_charge_state or "").lower()
+    autel = (autel_state or "").lower()
+    tracker = (tracker_state or "").lower()
+    tesla_live = tesla in ("charging", "starting", "on")
+    return tesla_live and autel == "on" and tracker == "home"
+
+
 def car_positively_away(
     garage_state: str | None,
     tracker_state: str | None,
     location_override: bool,
+    *,
+    live_home_charge: bool = False,
 ) -> bool:
     """
     True only when we *know* the car left — not merely "can't charge here".
@@ -462,9 +486,10 @@ def car_positively_away(
     Deliberately stricter than ``not presence_allows_home_charge``: it is used
     to end a started session's guards, and a sensor blip (vision or tracker
     unavailable) must never do that — clearing guards mid-session re-opens the
-    Remote-off incidents 1.5.5/1.5.6 fixed.
+    Remote-off incidents 1.5.5/1.5.6 fixed. A live Tesla+Autel+GPS-home charge
+    is also not "away" even if vision says the spot is empty.
     """
-    if location_override:
+    if location_override or live_home_charge:
         return False
     garage = (garage_state or "").lower()
     tracker = (tracker_state or "").lower()
@@ -956,6 +981,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         tracked = [
             SENSOR_SOC,
             SENSOR_CHARGING,   # so a live session is adopted promptly after restart
+            SWITCH_AUTEL_CHARGE_CONTROL,  # live-hold: Autel on + Tesla + GPS
             BINARY_SENSOR_CABLE,
             BINARY_SENSOR_GARAGE_CAR,
             DEVICE_TRACKER,
@@ -1070,19 +1096,39 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         garage_state_obj = self.hass.states.get(BINARY_SENSOR_GARAGE_CAR)
         garage_state = garage_state_obj.state if garage_state_obj is not None else None
-        # Align with actuator: vision + GPS (not GPS-only) for home-charge decisions
+
+        charging_state = self.hass.states.get(SENSOR_CHARGING)
+        tesla_charge_raw = charging_state.state if charging_state is not None else None
+        is_externally_charging = (
+            tesla_charge_raw is not None
+            and tesla_charge_raw.lower() not in _UNAVAILABLE
+            and tesla_charge_raw.lower() in ("charging", "starting", "on")
+        )
+        autel_state_obj = self.hass.states.get(SWITCH_AUTEL_CHARGE_CONTROL)
+        autel_raw = autel_state_obj.state if autel_state_obj is not None else None
+        live_hold = live_home_charge_hold(
+            tesla_charge_raw, autel_raw, tracker_state
+        )
+        # Align with actuator: vision + GPS for *starting*. A live Tesla+Autel
+        # charge with GPS home holds through a vision-empty blip (20-08 14:12).
         is_home = presence_allows_home_charge(
             garage_state, tracker_state, location_override_active
-        )
+        ) or live_hold
 
         # ── Session guards: end of life ──────────────────────────────────────
         # charging_started + locked_session_end describe ONE physical session at
         # this cable. Driving away or unplugging ends it; without this the stale
         # lock later forces a charge the fresh plan rejected, and the stuck
         # started-flag disables the charge_start_soc debounce for good.
-        # Only a *positive* away/unplug counts — never a sensor blip.
+        # Only a *positive* away/unplug counts — never a sensor blip, and never
+        # a vision-empty frame while Tesla+Autel+GPS still say home charging.
         if self._charging_started and (
-            car_positively_away(garage_state, tracker_state, location_override_active)
+            car_positively_away(
+                garage_state,
+                tracker_state,
+                location_override_active,
+                live_home_charge=live_hold,
+            )
             or (cable_known and not cable_connected)
         ):
             _LOGGER.info(
@@ -1151,13 +1197,6 @@ class MyszolotCoordinator(DataUpdateCoordinator):
 
         price_state = self.hass.states.get(SENSOR_PRICE)
         current_price = _parse_float(price_state) or 0.0
-
-        charging_state = self.hass.states.get(SENSOR_CHARGING)
-        is_externally_charging = (
-            charging_state is not None
-            and charging_state.state.lower() not in _UNAVAILABLE
-            and charging_state.state.lower() in ("charging", "on")
-        )
 
         # ── Session guards: adoption ─────────────────────────────────────────
         # The guards live in RAM only, so an HA restart mid-block forgets that a

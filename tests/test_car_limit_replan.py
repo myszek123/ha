@@ -6,6 +6,8 @@ from custom_components.myszolot.coordinator import (
     resolve_target_with_car_limit,
     should_reset_car_limit_after_session,
     presence_allows_home_charge,
+    live_home_charge_hold,
+    car_positively_away,
 )
 from custom_components.myszolot.const import (
     MODE_SMART,
@@ -137,6 +139,28 @@ def test_presence_matches_actuator_gate():
     assert presence_allows_home_charge("off", "home", False) is False
     assert presence_allows_home_charge("unavailable", "home", False) is True
     assert presence_allows_home_charge("off", "not_home", True) is True  # force-home
+
+
+def test_live_home_charge_hold_needs_tesla_autel_and_gps_home():
+    """20-08 14:12: only a physical home charge holds through vision-empty."""
+    assert live_home_charge_hold("charging", "on", "home") is True
+    assert live_home_charge_hold("starting", "on", "home") is True
+    assert live_home_charge_hold("on", "on", "home") is True
+    assert live_home_charge_hold("stopped", "on", "home") is False
+    assert live_home_charge_hold("charging", "off", "home") is False
+    assert live_home_charge_hold("charging", "on", "not_home") is False
+    assert live_home_charge_hold("charging", "on", "unknown") is False
+    assert live_home_charge_hold(None, "on", "home") is False
+
+
+def test_car_positively_away_vision_empty_is_away_unless_live_hold():
+    assert car_positively_away("off", "home", False) is True
+    assert car_positively_away(
+        "off", "home", False, live_home_charge=True
+    ) is False
+    assert car_positively_away("off", "not_home", False) is True
+    assert car_positively_away("on", "home", False) is False
+    assert car_positively_away("unavailable", "home", False) is False
 
 
 def test_reset_car_limit_when_session_complete():

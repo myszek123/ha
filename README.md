@@ -14,7 +14,8 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 - **Battery health**: Emergency min-SoC floor; daily charge-start debounce
 - **Continuous sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
 - **Location override**: Force "at home" if device tracker is unreliable
-- **Cable reminder**: Notifies when cable is needed before a session
+- **Live home hold**: Tesla charging + Autel on + GPS home → ignore garage-vision empty (do not Remote-off)
+- **Cable reminder**: Notifies when cable is needed before a session (3 min grace after garage arrival so a normal plug-in is silent)
 - **Dashboard card**: Status, plan summary, smart reset, override controls
 
 ## Requirements
@@ -195,7 +196,7 @@ Actuated by automations from `sensor.myszolot_charge_reason`:
 - **Debounce:** if SoC already **>** `charge_start_soc` (69%), do not start a new daily plan (`soc_sufficient`)
 - **Price:** skip hours above `max_price_threshold` — wait longer for cheaper power
 - **Emergency:** if SoC &lt; `min_soc` and cable is in, charge immediately at full amps
-- **Once a session starts:** `charging_started` allows finishing through to 80% even past the debounce line. The session ends — and its guards clear — when the car leaves or the cable comes out; a sensor going *unavailable* is not treated as either
+- **Once a session starts:** `charging_started` allows finishing through to 80% even past the debounce line. The session ends — and its guards clear — when the car leaves or the cable comes out; a sensor going *unavailable* is not treated as either. Garage vision flipping empty while Tesla is charging, Autel is on, and GPS is home is also not "left" (20-08-2026 14:12)
 - **Unreadable SoC:** never guessed as 0% — reason `soc_unknown`, nothing is planned and the emergency floor does not fire (a running block keeps going)
 
 ### Override (temporary)

@@ -15,6 +15,9 @@
     in the garage (Frigate spot classifier when available, else device tracker).
     Uses binary_sensor.myszolot_cable_needed. Quiet between 23:30 and 06:00.
     Stops after 5 notifications until cable_needed clears (counter reset).
+    Arrival grace: 3 min after the car is seen in the garage (GPS home if
+    vision unavailable) so a normal plug-in is not nagged. Already-home +
+    cheap hour starting still pings immediately.
   triggers:
     - trigger: time_pattern
       minutes: "/2"
@@ -30,6 +33,21 @@
         {{ is_state('binary_sensor.garage_car_present', 'on')
            or (states('binary_sensor.garage_car_present') in ['unknown', 'unavailable']
                and is_state('device_tracker.myszolot_location', 'home')) }}
+    # 30-08 11:39: notify 9s after garage vision, cable in 43s later.
+    # last_changed on occupancy/GPS state (not attributes) — vision blip
+    # resets the 3 min, which is acceptable.
+    - condition: template
+      value_template: >-
+        {% set grace = 180 %}
+        {% set g = states.binary_sensor.garage_car_present %}
+        {% set t = states.device_tracker.myszolot_location %}
+        {% if g.state == 'on' %}
+          {{ (now() - g.last_changed).total_seconds() >= grace }}
+        {% elif g.state in ['unknown', 'unavailable'] and t.state == 'home' %}
+          {{ (now() - t.last_changed).total_seconds() >= grace }}
+        {% else %}
+          false
+        {% endif %}
     - condition: template
       value_template: "{{ not is_state('binary_sensor.myszolot_charge_cable', 'on') }}"
     - condition: time
