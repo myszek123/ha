@@ -1,6 +1,9 @@
 # Helpers required by the calendar-trip charging automations.
-# Create once via Settings → Devices & Services → Helpers, or paste into
-# configuration.yaml and restart HA.
+#
+# Both are already CREATED on the live instance via the WebSocket config API
+# (zone/create, input_boolean/create) and are UI-editable under
+# Settings → Areas & Zones / Settings → Devices & Services → Helpers.
+# Recorded here so the repo documents the full dependency set.
 #
 # Used by:
 #   automations/trip-detect-arm-override.yml  (sets the flag when arming)
@@ -13,19 +16,25 @@
 #     icon: mdi:car-arrow-right
 #     initial: off
 
-# Zone for mama's house in Łódź (Leżakowa / Plenerowa / Paradna area).
+# Zone for mama's house in Łódź — Leżakowa 1, Ruda Pabianicka, 93-430 Łódź.
+# Coordinates from OpenStreetMap/Nominatim, exact building match (osm way
+# 285885845). 123.8 km straight-line from home, consistent with the Łódź street
+# list in tools/charge_log.py (Leżakowa / Plenerowa / Paradna).
 # Radius 150 m — wide enough that a street-parked car still registers.
-# NOTE: replace the placeholder coordinates before enabling
-# automations/away-trip-charge-limit.yml.
 #
 # zone:
-#   - name: Łódź Mama
+#   - name: Lodz Mama
 #     id: lodz_mama
-#     latitude: 0.0        # TODO: paste real coords
-#     longitude: 0.0       # TODO: paste real coords
+#     latitude: 51.70737
+#     longitude: 19.455401
 #     radius: 150
 #     icon: mdi:home-heart
 #
+# Name deliberately has no diacritics so the slug is zone.lodz_mama, which is
+# what away-trip-charge-limit.yml references.
+#
 # The działka zone already exists as zone.wisniewscy
 # (53.56146141630418, 21.008638136297023, radius 30 m). Consider widening it to
-# ~100 m: at 30 m a GPS drift can miss the zone-enter trigger entirely.
+# ~100 m: at 30 m a GPS drift can miss the zone-enter trigger entirely. Left
+# unchanged here because other automations (charger-lockdown, presence) already
+# depend on its current geometry.
