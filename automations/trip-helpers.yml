@@ -1,21 +1,9 @@
-# Helpers required by the calendar-trip charging automations.
+# Zone required by automations/trip-charging.yml.
 #
-# Both are already CREATED on the live instance via the WebSocket config API
-# (zone/create, input_boolean/create) and are UI-editable under
-# Settings → Areas & Zones / Settings → Devices & Services → Helpers.
+# Already CREATED on the live instance via the WebSocket config API
+# (zone/create) and UI-editable under Settings → Areas & Zones.
 # Recorded here so the repo documents the full dependency set.
 #
-# Used by:
-#   automations/trip-detect-arm-override.yml  (sets the flag when arming)
-#   automations/trip-armed-reset.yml          (clears it when override ends)
-#   automations/away-trip-charge-limit.yml    (needs zone.lodz_mama)
-
-# input_boolean:
-#   myszolot_trip_armed:
-#     name: Myszolot trip armed
-#     icon: mdi:car-arrow-right
-#     initial: off
-
 # Zone for mama's house in Łódź — Leżakowa 1, Ruda Pabianicka, 93-430 Łódź.
 # Coordinates from OpenStreetMap/Nominatim, exact building match (osm way
 # 285885845). 123.8 km straight-line from home, consistent with the Łódź street
@@ -31,10 +19,15 @@
 #     icon: mdi:home-heart
 #
 # Name deliberately has no diacritics so the slug is zone.lodz_mama, which is
-# what away-trip-charge-limit.yml references.
+# what trip-charging.yml references.
 #
 # The działka zone already exists as zone.wisniewscy
 # (53.56146141630418, 21.008638136297023, radius 30 m). Consider widening it to
 # ~100 m: at 30 m a GPS drift can miss the zone-enter trigger entirely. Left
 # unchanged here because other automations (charger-lockdown, presence) already
 # depend on its current geometry.
+#
+# NOTE: no input_boolean is needed. An earlier draft used
+# input_boolean.myszolot_trip_armed as an arm-once guard; the "mode is smart"
+# condition in trip-charging.yml does the same job without the extra helper or
+# the reset automation it required.

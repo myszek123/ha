@@ -245,28 +245,31 @@ mode: single
 
 See `automations/charge-limit-automation.yml` — smart → 80%, override → custom target helper.
 
-### Calendar-driven trip charging
+### Trip charging (calendar + away)
 
-Arms a 96 % override automatically when a long drive appears on the calendar,
-and raises the car's limit on arrival at a trip destination.
+`automations/trip-charging.yml` — **one** automation covering both directions,
+so the whole behaviour is disabled by a single toggle. `mode: queued` so a zone
+arrival is never dropped while a calendar scan is mid-flight.
 
-- `automations/trip-detect-arm-override.yml` — scans `calendar.jjsateam_gmail_com`
-  and `calendar.jakubmyszka_gmail_com` every 30 min for the next 12 h. Matches
+- **Outbound branch** (`time_pattern` every 30 min): scans
+  `calendar.jjsateam_gmail_com` and `calendar.jakubmyszka_gmail_com` for the
+  next 12 h. Events further out are ignored. Matches
   `łód|lod[zź]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
   summary + description + location. On a hit: target 96 %, **deadline = time
   until departure** (floored to whole hours so it lands before you leave), then
-  mode → `override`. The scheduler still picks the cheapest Pstryk hours inside
+  mode → `override`. The planner still picks the cheapest Pstryk hours inside
   that window rather than charging flat out. All-day events are treated as a
   09:00 departure; events under 60 min away are skipped (helper minimum is 1 h).
-- `automations/away-trip-charge-limit.yml` — car enters `zone.wisniewscy`
-  (działka) or `zone.lodz_mama` → wake, push `number.myszolot_charge_limit` = 96.
-  No smart scheduling: the działka is on Energa and Łódź is mama's meter, so
-  there is no dynamic price to optimise, and the planner does not actuate away
-  from home anyway. Return to 80 % is handled by the existing
-  `charge-limit-automation.yml` on arrival home.
-- `automations/trip-armed-reset.yml` — clears the arm flag when override ends.
-- `automations/trip-helpers.yml` — `input_boolean.myszolot_trip_armed` and the
-  `zone.lodz_mama` definition (coordinates still to be filled in).
+  Guarded by a `mode == smart` condition, which is self-limiting — arming flips
+  mode to override so the next scan skips, and once the deadline passes
+  departure has passed too, so the event fails the 60 min filter.
+- **Return branch** (`zone` enter): car enters `zone.wisniewscy` (działka) or
+  `zone.lodz_mama` → wake, push `number.myszolot_charge_limit` = 96, so plugging
+  in there charges enough for the drive home. No price optimisation: neither
+  site is on Pstryk, and the planner only actuates the charger at home. Return
+  to 80 % is handled by `charge-limit-automation.yml` on arrival home.
+- `automations/trip-helpers.yml` — the `zone.lodz_mama` definition. No
+  input_boolean is required.
 
 ### Cable reminder / location override reset / dashboard
 
