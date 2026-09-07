@@ -245,6 +245,29 @@ mode: single
 
 See `automations/charge-limit-automation.yml` — smart → 80%, override → custom target helper.
 
+### Calendar-driven trip charging
+
+Arms a 96 % override automatically when a long drive appears on the calendar,
+and raises the car's limit on arrival at a trip destination.
+
+- `automations/trip-detect-arm-override.yml` — scans `calendar.jjsateam_gmail_com`
+  and `calendar.jakubmyszka_gmail_com` every 30 min for the next 12 h. Matches
+  `łód|lod[zź]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
+  summary + description + location. On a hit: target 96 %, **deadline = time
+  until departure** (floored to whole hours so it lands before you leave), then
+  mode → `override`. The scheduler still picks the cheapest Pstryk hours inside
+  that window rather than charging flat out. All-day events are treated as a
+  09:00 departure; events under 60 min away are skipped (helper minimum is 1 h).
+- `automations/away-trip-charge-limit.yml` — car enters `zone.wisniewscy`
+  (działka) or `zone.lodz_mama` → wake, push `number.myszolot_charge_limit` = 96.
+  No smart scheduling: the działka is on Energa and Łódź is mama's meter, so
+  there is no dynamic price to optimise, and the planner does not actuate away
+  from home anyway. Return to 80 % is handled by the existing
+  `charge-limit-automation.yml` on arrival home.
+- `automations/trip-armed-reset.yml` — clears the arm flag when override ends.
+- `automations/trip-helpers.yml` — `input_boolean.myszolot_trip_armed` and the
+  `zone.lodz_mama` definition (coordinates still to be filled in).
+
 ### Cable reminder / location override reset / dashboard
 
 - `automations/cable-reminder.yml`

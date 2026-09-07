@@ -1,0 +1,31 @@
+# Helpers required by the calendar-trip charging automations.
+# Create once via Settings → Devices & Services → Helpers, or paste into
+# configuration.yaml and restart HA.
+#
+# Used by:
+#   automations/trip-detect-arm-override.yml  (sets the flag when arming)
+#   automations/trip-armed-reset.yml          (clears it when override ends)
+#   automations/away-trip-charge-limit.yml    (needs zone.lodz_mama)
+
+# input_boolean:
+#   myszolot_trip_armed:
+#     name: Myszolot trip armed
+#     icon: mdi:car-arrow-right
+#     initial: off
+
+# Zone for mama's house in Łódź (Leżakowa / Plenerowa / Paradna area).
+# Radius 150 m — wide enough that a street-parked car still registers.
+# NOTE: replace the placeholder coordinates before enabling
+# automations/away-trip-charge-limit.yml.
+#
+# zone:
+#   - name: Łódź Mama
+#     id: lodz_mama
+#     latitude: 0.0        # TODO: paste real coords
+#     longitude: 0.0       # TODO: paste real coords
+#     radius: 150
+#     icon: mdi:home-heart
+#
+# The działka zone already exists as zone.wisniewscy
+# (53.56146141630418, 21.008638136297023, radius 30 m). Consider widening it to
+# ~100 m: at 30 m a GPS drift can miss the zone-enter trigger entirely.
