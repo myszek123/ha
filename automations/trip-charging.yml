@@ -27,7 +27,15 @@ description: >
   Charging is deliberately tied to departure only — never to arrival. Topping
   up on arrival would leave the car near full for the whole stay, which is bad
   for the pack and is not what was asked for.
+
+  Arming requires BOTH that the mode is smart AND that SoC is below the target.
+  Mode alone is not an arm-once guard: override also ends when the target is
+  reached, which drops straight back to smart and would let the same departure
+  re-arm every 30 min for the rest of the day.
 mode: single
+
+variables:
+  trip_target: 96
 
 triggers:
   - trigger: time_pattern
@@ -45,12 +53,28 @@ actions:
           - condition: trigger
             id: calendar_scan
           # Only arm from a clean smart state; if already in override, leave
-          # it alone. Self-limiting: arming flips mode to override so the next
-          # scan skips, and once the deadline passes the departure has passed
-          # too, so that candidate fails the >=60 min filter.
+          # it alone.
           - condition: state
             entity_id: select.myszolot_charge_mode
             state: smart
+
+          # ...but "mode is smart" is NOT a sufficient arm-once guard, which an
+          # earlier version of this comment claimed. Override ends on EITHER
+          # the deadline passing OR the target being reached, and target-reached
+          # is the normal case: the coordinator flips straight back to smart and
+          # restores the 80 % limit. The next 30 min scan then sees smart again,
+          # the same departure is still >60 min out, and it re-arms — limit
+          # 80->96->80 within ~20 s, plus a push notification, every half hour
+          # until departure. Observed 08-09-2026: SoC hit 96 at 13:56, then
+          # spurious re-arms at 14:00, 14:30 and 15:00.
+          #
+          # So refuse to arm when the battery is already at the trip target.
+          # There is nothing to buy and nothing to tell the driver. If SoC later
+          # sags below the target there is still time to top up, which is the
+          # behaviour we want.
+          - condition: template
+            value_template: >-
+              {{ states('sensor.myszolot_battery_level') | int(0) < trip_target }}
         sequence:
           - action: calendar.get_events
             target:
@@ -121,7 +145,7 @@ actions:
             target:
               entity_id: input_number.myszolot_custom_target_soc
             data:
-              value: 96
+              value: "{{ trip_target }}"
 
           - action: input_number.set_value
             target:
@@ -140,12 +164,12 @@ actions:
           - action: notify.mobile_app_j23
             data:
               title: >-
-                {{ 'Powrót' if trip.leg == 'end' else 'Wyjazd' }} — ładowanie 96%
+                {{ 'Powrót' if trip.leg == 'end' else 'Wyjazd' }} — ładowanie {{ trip_target }}%
               message: >-
                 {{ trip.summary }} —
                 {{ 'powrót' if trip.leg == 'end' else 'wyjazd' }}
                 {{ as_timestamp(trip.dep) | timestamp_custom('%d-%m-%Y %H:%M') }}.
-                Override 96% w oknie {{ window_hours }} h (SoC teraz
+                Override {{ trip_target }}% w oknie {{ window_hours }} h (SoC teraz
                 {{ states('sensor.myszolot_battery_level') }}%).
                 {{ 'Kabel wpięty.' if is_state('binary_sensor.myszolot_charge_cable', 'on')
                    else 'UWAGA: kabel niewpięty!' }}
