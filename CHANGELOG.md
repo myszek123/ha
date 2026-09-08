@@ -7,7 +7,7 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.5.11] — 08-09-2026
 
 ### Added
 
