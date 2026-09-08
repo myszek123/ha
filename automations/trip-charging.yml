@@ -20,21 +20,13 @@ description: >
   target_soc = 96 so the reset never fires, and set_mode() pushes the limit to
   the car itself with restore_default=False, which works even when away.
 
-  This is why one branch serves both legs. At home the planner buys the
-  cheapest Pstryk hours inside the window; away it cannot actuate the charger
-  but still pins the car to 96 %, so plugging in at the działka charges enough
-  for the drive back.
+  One branch serves both legs. At home the planner buys the cheapest Pstryk
+  hours inside the window; away it cannot actuate the charger but still pins
+  the car to 96 %, so plugging in at the działka charges for the drive back.
 
-  Arrival at a destination is a fallback for stays with no calendar entry: it
-  arms override for the maximum 48 h window. If the stay is longer the override
-  lapses, the limit relaxes to 80 (better for the battery than sitting at 96
-  for days), and the calendar branch re-arms 16 h before the return.
-
-  The three destinations are distinct places — Brajniki (działka, gmina
-  Jedwabno) and Szczytno town are 13 km apart and need separate zones.
-
-  queued (not single) so a zone arrival is never dropped because a calendar
-  scan happened to be mid-flight.
+  Charging is deliberately tied to departure only — never to arrival. Topping
+  up on arrival would leave the car near full for the whole stay, which is bad
+  for the pack and is not what was asked for.
 mode: queued
 max: 5
 
@@ -42,21 +34,6 @@ triggers:
   - trigger: time_pattern
     minutes: "/30"
     id: calendar_scan
-  - trigger: zone
-    entity_id: device_tracker.myszolot_location
-    zone: zone.brajniki
-    event: enter
-    id: arrived_away
-  - trigger: zone
-    entity_id: device_tracker.myszolot_location
-    zone: zone.wisniewscy
-    event: enter
-    id: arrived_away
-  - trigger: zone
-    entity_id: device_tracker.myszolot_location
-    zone: zone.lodz_mama
-    event: enter
-    id: arrived_away
 
 conditions: []
 
@@ -155,41 +132,3 @@ actions:
                 {{ states('sensor.myszolot_battery_level') }}%).
                 {{ 'Kabel wpięty.' if is_state('binary_sensor.myszolot_charge_cable', 'on')
                    else 'UWAGA: kabel niewpięty!' }}
-
-      # ── Arrived at a destination with no calendar entry → 48 h fallback ───
-      - alias: Arrived at trip destination
-        conditions:
-          - condition: trigger
-            id: arrived_away
-          - condition: state
-            entity_id: select.myszolot_charge_mode
-            state: smart
-        sequence:
-          - action: input_number.set_value
-            target:
-              entity_id: input_number.myszolot_custom_target_soc
-            data:
-              value: 96
-
-          # Maximum window: we do not know the return time on arrival. If the
-          # stay outlasts it the limit relaxes to 80 and the calendar branch
-          # re-arms 16 h before the return leg.
-          - action: input_number.set_value
-            target:
-              entity_id: input_number.myszolot_deadline_hours
-            data:
-              value: 48
-
-          - action: select.select_option
-            target:
-              entity_id: select.myszolot_charge_mode
-            data:
-              option: override
-
-          - action: notify.mobile_app_j23
-            data:
-              title: "Na miejscu — limit 96%"
-              message: >-
-                {{ trigger.zone.attributes.friendly_name | default('Cel podróży') }}:
-                override 96% na 48 h (SoC teraz
-                {{ states('sensor.myszolot_battery_level') }}%). Podepnij kabel.
