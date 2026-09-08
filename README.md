@@ -253,7 +253,7 @@ arrival is never dropped while a calendar scan is mid-flight.
 
 - **Outbound branch** (`time_pattern` every 30 min): scans
   `calendar.jjsateam_gmail_com` and `calendar.jakubmyszka_gmail_com` for the
-  next 12 h. Events further out are ignored. Matches
+  next 16 h. Events further out are ignored. Matches
   `łód|lod[zź]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
   summary + description + location. On a hit: target 96 %, **deadline = time
   until departure** (floored to whole hours so it lands before you leave), then
@@ -263,13 +263,16 @@ arrival is never dropped while a calendar scan is mid-flight.
   Guarded by a `mode == smart` condition, which is self-limiting — arming flips
   mode to override so the next scan skips, and once the deadline passes
   departure has passed too, so the event fails the 60 min filter.
-- **Return branch** (`zone` enter): car enters `zone.wisniewscy` (działka) or
-  `zone.lodz_mama` → wake, push `number.myszolot_charge_limit` = 96, so plugging
+- **Return branch** (`zone` enter): car enters `zone.brajniki` (działka),
+  `zone.wisniewscy` (Szczytno, in-laws in town) or `zone.lodz_mama` → wake, push
+  `number.myszolot_charge_limit` = 96, so plugging
   in there charges enough for the drive home. No price optimisation: neither
   site is on Pstryk, and the planner only actuates the charger at home. Return
   to 80 % is handled by `charge-limit-automation.yml` on arrival home.
-- `automations/trip-helpers.yml` — the `zone.lodz_mama` definition. No
-  input_boolean is required.
+  Brajniki and Szczytno are **13 km apart** and are separate zones; one cannot
+  cover both.
+- `automations/trip-helpers.yml` — the `zone.brajniki` and `zone.lodz_mama`
+  definitions. No input_boolean is required.
 
 ### Cable reminder / location override reset / dashboard
 

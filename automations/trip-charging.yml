@@ -4,17 +4,20 @@ description: >
   single toggle.
 
   Outbound (calendar): every 30 min, scan both family calendars for the next
-  12 h. An event further out than that is ignored — nothing happens. An event
+  16 h. An event further out than that is ignored — nothing happens. An event
   inside the window that names a known destination (Łódź / Leżakowa, Brajniki,
   Szczytno, działka) arms Myszolot override at 96 %, with the deadline set to
   the actual departure time. The existing planner then picks the cheapest
   Pstryk hours inside that window instead of charging flat out.
 
-  Return (location): on arrival at the działka (zone.wisniewscy) or Łódź
-  (zone.lodz_mama), push a 96 % limit to the car so plugging in there charges
-  enough for the drive home. No price optimisation on this side — neither site
-  is on Pstryk, and the planner only actuates the charger at home. Restoring
-  80 % on return is handled by charge-limit-automation.yml.
+  Return (location): on arrival at any of the three destinations — Brajniki
+  (zone.brajniki, the działka), Szczytno (zone.wisniewscy, in-laws in town) or
+  Łódź (zone.lodz_mama) — push a 96 % limit to the car so plugging in there
+  charges enough for the drive home. These are three distinct places: Brajniki
+  and Szczytno are 13 km apart, so one zone cannot cover both. No price
+  optimisation on this side — none of them is on Pstryk, and the planner only
+  actuates the charger at home. Restoring 80 % on return is handled by
+  charge-limit-automation.yml.
 
   No arm/reset helper: the "mode is smart" condition is self-limiting. Arming
   flips mode to override so the next scan skips; once the deadline passes,
@@ -29,6 +32,11 @@ triggers:
   - trigger: time_pattern
     minutes: "/30"
     id: calendar_scan
+  - trigger: zone
+    entity_id: device_tracker.myszolot_location
+    zone: zone.brajniki
+    event: enter
+    id: arrived_away
   - trigger: zone
     entity_id: device_tracker.myszolot_location
     zone: zone.wisniewscy
@@ -46,7 +54,7 @@ actions:
   - choose:
 
       # ── Outbound: calendar says we drive soon → arm 96% override ──────────
-      - alias: Calendar trip within 12 h
+      - alias: Calendar trip within 16 h
         conditions:
           - condition: trigger
             id: calendar_scan
@@ -64,7 +72,7 @@ actions:
             data:
               start_date_time: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
               duration:
-                hours: 12
+                hours: 16
             response_variable: agenda
 
           # Future-starting events naming a known destination. All-day entries

@@ -1,15 +1,33 @@
-# Zone required by automations/trip-charging.yml.
+# Zones required by automations/trip-charging.yml.
 #
-# Already CREATED on the live instance via the WebSocket config API
-# (zone/create) and UI-editable under Settings → Areas & Zones.
-# Recorded here so the repo documents the full dependency set.
+# All three destinations are DISTINCT PLACES. An earlier draft treated Brajniki
+# and Szczytno as one location because notes/lists/home.md heads a section
+# "Działka (Brajniki / Szczytno)" — that was wrong. Reverse geocode of the car
+# parked at the działka on 08-09-2026 returned
+#   53.554338, 20.809263 -> Rybaczówka, Brajniki, gmina Jedwabno, 12-122
+# while zone.wisniewscy resolves to
+#   53.561461, 21.008638 -> Szczytno town, 12-100
+# They are 13.2 km apart, so one zone cannot cover both, and the arrival
+# trigger never fired at the działka while it pointed at Szczytno.
 #
-# Zone for mama's house in Łódź — Leżakowa 1, Ruda Pabianicka, 93-430 Łódź.
+# Created on the live instance via the WebSocket config API (zone/create) and
+# UI-editable under Settings → Areas & Zones. Recorded here so the repo
+# documents the full dependency set.
+
+# --- Brajniki: the działka (car's parked position, gmina Jedwabno) -----------
+# zone:
+#   - name: Brajniki
+#     id: brajniki
+#     latitude: 53.554338
+#     longitude: 20.809263
+#     radius: 150
+#     icon: mdi:pine-tree
+
+# --- Łódź: mama's house, Leżakowa 1, Ruda Pabianicka, 93-430 ----------------
 # Coordinates from OpenStreetMap/Nominatim, exact building match (osm way
 # 285885845). 123.8 km straight-line from home, consistent with the Łódź street
 # list in tools/charge_log.py (Leżakowa / Plenerowa / Paradna).
-# Radius 150 m — wide enough that a street-parked car still registers.
-#
+# Name deliberately has no diacritics so the slug is zone.lodz_mama.
 # zone:
 #   - name: Lodz Mama
 #     id: lodz_mama
@@ -17,14 +35,11 @@
 #     longitude: 19.455401
 #     radius: 150
 #     icon: mdi:home-heart
-#
-# Name deliberately has no diacritics so the slug is zone.lodz_mama, which is
-# what trip-charging.yml references.
-#
-# The działka zone already exists as zone.wisniewscy
-# (53.56146141630418, 21.008638136297023, radius 30 m). Consider widening it to
+
+# --- Szczytno: in-laws in town — ALREADY EXISTED as zone.wisniewscy ---------
+# (53.56146141630418, 21.008638136297023, radius 30 m). Consider widening to
 # ~100 m: at 30 m a GPS drift can miss the zone-enter trigger entirely. Left
-# unchanged here because other automations (charger-lockdown, presence) already
+# unchanged because other automations (charger-lockdown, presence) already
 # depend on its current geometry.
 #
 # NOTE: no input_boolean is needed. An earlier draft used

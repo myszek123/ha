@@ -15,14 +15,16 @@ versioning: [SemVer](https://semver.org/).
   `automations/trip-charging.yml` is a single automation covering both
   directions, so the whole behaviour can be turned off with one toggle.
   Outbound: scans both family calendars every 30 min for a drive to Łódź /
-  Brajniki / Szczytno starting within 12 h and arms override at 96 % with the
+  Brajniki / Szczytno starting within 16 h and arms override at 96 % with the
   deadline set to the actual departure time, so the existing planner still buys
   the cheapest hours inside the window instead of charging flat out. Return:
-  pushes a 96 % car limit on arrival at `zone.wisniewscy` / `zone.lodz_mama` —
+  pushes a 96 % car limit on arrival at `zone.brajniki` / `zone.wisniewscy` /
+  `zone.lodz_mama` — Brajniki (the działka, gmina Jedwabno) and Szczytno town
+  are 13 km apart and need separate zones —
   no price optimisation there, since neither site is on Pstryk and the planner
   does not actuate away from home. Runs `queued` so a zone arrival is not
-  dropped during a calendar scan. Requires only `zone.lodz_mama`
-  (see `automations/trip-helpers.yml`).
+  dropped during a calendar scan. Requires `zone.brajniki` and `zone.lodz_mama`
+  (see `automations/trip-helpers.yml`); `zone.wisniewscy` already existed.
 
 ## [1.5.10] — 30-08-2026
 
