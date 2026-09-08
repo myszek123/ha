@@ -27,8 +27,7 @@ description: >
   Charging is deliberately tied to departure only — never to arrival. Topping
   up on arrival would leave the car near full for the whole stay, which is bad
   for the pack and is not what was asked for.
-mode: queued
-max: 5
+mode: single
 
 triggers:
   - trigger: time_pattern
@@ -66,10 +65,21 @@ actions:
 
           # Both start and end are candidate departures. All-day entries
           # (bare date) are treated as a 09:00 departure.
+          #
+          # The destination pattern must survive Polish declension: a calendar
+          # entry is far more often "Wyjazd do Łodzi" than the bare nominative
+          # "Łódź". The declined stem keeps ł but drops the ó (Łódź → Łodzi),
+          # so the class [łl][oó]d[zźż] is what covers both, plus the
+          # diacritic-free "Lodz" people type on a phone keyboard.
+          #
+          # All-day end dates are EXCLUSIVE (iCal/Google): a stay whose last
+          # day is 08-09 arrives here as end="2026-09-09". Step back one day
+          # so the return leg is not armed 24 h late. Date-only arithmetic,
+          # so DST transitions cannot shift the 09:00.
           - variables:
               trips: >-
                 {%- set ns = namespace(items=[]) -%}
-                {%- set pat = 'łód|lod[zź]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k' -%}
+                {%- set pat = '[łl][oó]d[zźż]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k' -%}
                 {%- for cal in agenda.keys() -%}
                   {%- for ev in agenda[cal].events -%}
                     {%- set blob = (ev.summary ~ ' ' ~ ev.get('description', '') ~ ' ' ~ ev.get('location', '')) | lower -%}
@@ -77,7 +87,12 @@ actions:
                       {%- for leg in ['start', 'end'] -%}
                         {%- set raw = ev.get(leg, '') -%}
                         {%- if raw -%}
-                          {%- set dep = (raw ~ 'T09:00:00') if raw | length == 10 else raw -%}
+                          {%- if raw | length == 10 -%}
+                            {%- set day = (as_datetime(raw) - timedelta(days=1)).strftime('%Y-%m-%d') if leg == 'end' else raw -%}
+                            {%- set dep = day ~ 'T09:00:00' -%}
+                          {%- else -%}
+                            {%- set dep = raw -%}
+                          {%- endif -%}
                           {%- set mins = ((as_timestamp(dep) - as_timestamp(now())) / 60) | round(0) | int -%}
                           {%- if mins >= 60 and mins <= 960 -%}
                             {%- set ns.items = ns.items + [{'mins': mins, 'dep': dep, 'summary': ev.summary, 'leg': leg}] -%}
@@ -97,8 +112,10 @@ actions:
               trip: "{{ trips[0] }}"
               # Floor, not ceil: the deadline must land *before* departure,
               # else the planner may buy an hour ending after we have left.
-              # Clamped to the helper's 1-48 range.
-              window_hours: "{{ [[(trip.mins / 60) | round(0, 'floor') | int, 1] | max, 48] | min }}"
+              # The >=60 min / <=960 min filter above already bounds this to
+              # 1-16, inside the helper's 1-48 range, so only the floor of 1
+              # needs enforcing.
+              window_hours: "{{ [(trip.mins / 60) | round(0, 'floor') | int, 1] | max }}"
 
           - action: input_number.set_value
             target:

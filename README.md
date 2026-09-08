@@ -245,34 +245,51 @@ mode: single
 
 See `automations/charge-limit-automation.yml` — smart → 80%, override → custom target helper.
 
-### Trip charging (calendar + away)
+### Trip charging (calendar)
 
-`automations/trip-charging.yml` — **one** automation covering both directions,
-so the whole behaviour is disabled by a single toggle. `mode: queued` so a zone
-arrival is never dropped while a calendar scan is mid-flight.
+`automations/trip-charging.yml` — a single calendar-driven automation, so the
+whole behaviour is disabled by one toggle. `mode: single`; one trigger, and a
+30 min scan cannot overlap itself.
 
-- **Outbound branch** (`time_pattern` every 30 min): scans
+Charging is tied to **departure only, never arrival**. Topping up on arrival
+would hold the pack near full for the whole stay, which is bad for the battery
+and is not what was wanted.
+
+- **Trigger** (`time_pattern` every 30 min): scans
   `calendar.jjsateam_gmail_com` and `calendar.jakubmyszka_gmail_com` for the
   next 16 h. Events further out are ignored. Matches
-  `łód|lod[zź]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
-  summary + description + location. On a hit: target 96 %, **deadline = time
-  until departure** (floored to whole hours so it lands before you leave), then
-  mode → `override`. The planner still picks the cheapest Pstryk hours inside
-  that window rather than charging flat out. All-day events are treated as a
-  09:00 departure; events under 60 min away are skipped (helper minimum is 1 h).
-  Guarded by a `mode == smart` condition, which is self-limiting — arming flips
-  mode to override so the next scan skips, and once the deadline passes
-  departure has passed too, so the event fails the 60 min filter.
-- **Return branch** (`zone` enter): car enters `zone.brajniki` (działka),
-  `zone.wisniewscy` (Szczytno, in-laws in town) or `zone.lodz_mama` → wake, push
-  `number.myszolot_charge_limit` = 96, so plugging
-  in there charges enough for the drive home. No price optimisation: neither
-  site is on Pstryk, and the planner only actuates the charger at home. Return
-  to 80 % is handled by `charge-limit-automation.yml` on arrival home.
-  Brajniki and Szczytno are **13 km apart** and are separate zones; one cannot
-  cover both.
-- `automations/trip-helpers.yml` — the `zone.brajniki` and `zone.lodz_mama`
-  definitions. No input_boolean is required.
+  `[łl][oó]d[zźż]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
+  summary + description + location. The `[łl][oó]d[zźż]` class is deliberate:
+  Polish declension turns *Łódź* into *Łodzi*, so a plain `łód` alternative
+  silently misses the far more common "Wyjazd do Łodzi".
+- **Both legs count.** A stay-shaped entry like "Brajniki visit"
+  03-09 18:00 → 08-09 20:15 means drive out at the start and drive home at the
+  end, so start *and* end are candidate departures. Keying off the start alone
+  missed every return leg.
+- **On a hit:** target 96 %, **deadline = time until departure** (floored to
+  whole hours so it lands before you leave), then mode → `override`. The
+  planner still buys the cheapest Pstryk hours inside that window rather than
+  charging flat out. At home it actuates the charger; away it cannot, but
+  override still pins the car's own limit to 96 % (`restore_default=False`),
+  so plugging in at the działka charges for the drive back.
+- **Why override and not a bare `number.set_value`:** in smart mode the
+  planner's target is 80 %, so the moment SoC reaches 80 the coordinator's
+  `should_reset_car_limit_after_session()` pushes the car limit back to default
+  and wipes a manually set 96 (observed 08-09-2026: set 96 at 10:09, SoC hit 80
+  at 10:27:53, limit reset to 80 at 10:28:00). Override locks `target_soc` so
+  that reset never fires.
+- **All-day events** are treated as a 09:00 departure. Their `end` date is
+  exclusive (iCal/Google), so the return leg steps back one day — otherwise a
+  stay ending 08-09 would arm 24 h late.
+- Events under 60 min away are skipped (the deadline helper's minimum is 1 h).
+- Guarded by a `mode == smart` condition, which is self-limiting: arming flips
+  mode to override so the next scan skips, and the coordinator drops back to
+  smart when the deadline passes — by which point departure is under 60 min
+  away, so the same event cannot re-arm.
+- `automations/trip-helpers.yml` — reference only. It documents the
+  `zone.brajniki` / `zone.lodz_mama` coordinates left over from a dropped
+  arrival branch. **No automation in this repo references any zone**, and no
+  input_boolean is required.
 
 ### Cable reminder / location override reset / dashboard
 
