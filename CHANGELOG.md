@@ -11,6 +11,18 @@ versioning: [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Trip charging re-armed every 30 min once the car was already charged.**
+  The `mode == smart` condition was documented as an arm-once guard. It is not:
+  override ends on *either* the deadline passing *or* the target being reached,
+  and target-reached is the normal case — the coordinator drops straight back to
+  smart and restores the 80 % limit. The next scan then saw smart again, found
+  the same departure still more than 60 min out, and re-armed. Observed
+  08-09-2026: SoC hit 96 % at 13:56, and the 14:00 / 14:30 / 15:00 scans each
+  flapped the car limit 80 → 96 → 80 within ~20 s and pushed a
+  "Powrót — ładowanie 96 %" notification, with nothing left to charge. Arming
+  now also requires SoC to be below the trip target; an unreadable SoC still
+  arms, failing toward charging. The target is hoisted into a `trip_target`
+  variable so the condition, the helper write and the notification cannot drift.
 - **Trip charging missed every declined form of "Łódź."** The destination
   pattern used `łód|lod[zź]`, which matches the bare nominative *Łódź* and the
   ASCII *Lodz* but not *Łodzi* — the form Polish actually uses in a calendar

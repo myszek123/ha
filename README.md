@@ -282,10 +282,13 @@ and is not what was wanted.
   exclusive (iCal/Google), so the return leg steps back one day — otherwise a
   stay ending 08-09 would arm 24 h late.
 - Events under 60 min away are skipped (the deadline helper's minimum is 1 h).
-- Guarded by a `mode == smart` condition, which is self-limiting: arming flips
-  mode to override so the next scan skips, and the coordinator drops back to
-  smart when the deadline passes — by which point departure is under 60 min
-  away, so the same event cannot re-arm.
+- **Arming requires two conditions**: mode is `smart` *and* SoC is below
+  `trip_target` (96). Mode alone is not an arm-once guard — override ends when
+  the target is reached as well as when the deadline passes, and target-reached
+  is the normal case, dropping straight back to `smart`. Without the SoC
+  condition the same departure re-arms every 30 min for the rest of the day,
+  flapping the car limit 80 → 96 → 80 and notifying each time. An unreadable
+  SoC still arms, which fails toward charging.
 - `automations/trip-helpers.yml` — reference only. It documents the
   `zone.brajniki` / `zone.lodz_mama` coordinates left over from a dropped
   arrival branch. **No automation in this repo references any zone**, and no
