@@ -3,25 +3,35 @@ description: >
   Whole trip-charging behaviour in one automation, so it can be disabled with a
   single toggle.
 
-  Outbound (calendar): every 30 min, scan both family calendars for the next
-  16 h. An event further out than that is ignored — nothing happens. An event
-  inside the window that names a known destination (Łódź / Leżakowa, Brajniki,
-  Szczytno, działka) arms Myszolot override at 96 %, with the deadline set to
-  the actual departure time. The existing planner then picks the cheapest
-  Pstryk hours inside that window instead of charging flat out.
+  Every 30 min, scan both family calendars for the next 16 h. An event further
+  out is ignored. An event inside the window naming a known destination
+  (Łódź / Leżakowa, Brajniki, Szczytno, działka) arms Myszolot override at 96 %
+  with the deadline set to the departure time.
 
-  Return (location): on arrival at any of the three destinations — Brajniki
-  (zone.brajniki, the działka), Szczytno (zone.wisniewscy, in-laws in town) or
-  Łódź (zone.lodz_mama) — push a 96 % limit to the car so plugging in there
-  charges enough for the drive home. These are three distinct places: Brajniki
-  and Szczytno are 13 km apart, so one zone cannot cover both. No price
-  optimisation on this side — none of them is on Pstryk, and the planner only
-  actuates the charger at home. Restoring 80 % on return is handled by
-  charge-limit-automation.yml.
+  BOTH ends of an event are departure candidates. A stay-shaped entry like
+  "Brajniki visit" 03-09 18:00 -> 08-09 20:15 means: drive out at the start,
+  drive home at the end. Keying off the start alone missed every return leg.
 
-  No arm/reset helper: the "mode is smart" condition is self-limiting. Arming
-  flips mode to override so the next scan skips; once the deadline passes,
-  departure has passed too and the event fails the >=60 min filter.
+  Override — not a bare number.set_value — is what actually holds. In smart
+  mode the planner's target is 80 %, so the moment SoC reaches 80 the
+  coordinator's should_reset_car_limit_after_session() pushes the car limit
+  back to default and a manually set 96 is wiped (observed 08-09: set 96 at
+  10:09, SoC hit 80 at 10:27:53, limit reset to 80 at 10:28:00). Override locks
+  target_soc = 96 so the reset never fires, and set_mode() pushes the limit to
+  the car itself with restore_default=False, which works even when away.
+
+  This is why one branch serves both legs. At home the planner buys the
+  cheapest Pstryk hours inside the window; away it cannot actuate the charger
+  but still pins the car to 96 %, so plugging in at the działka charges enough
+  for the drive back.
+
+  Arrival at a destination is a fallback for stays with no calendar entry: it
+  arms override for the maximum 48 h window. If the stay is longer the override
+  lapses, the limit relaxes to 80 (better for the battery than sitting at 96
+  for days), and the calendar branch re-arms 16 h before the return.
+
+  The three destinations are distinct places — Brajniki (działka, gmina
+  Jedwabno) and Szczytno town are 13 km apart and need separate zones.
 
   queued (not single) so a zone arrival is never dropped because a calendar
   scan happened to be mid-flight.
@@ -53,13 +63,15 @@ conditions: []
 actions:
   - choose:
 
-      # ── Outbound: calendar says we drive soon → arm 96% override ──────────
+      # ── Calendar: a drive starts or ends within 16 h → arm 96% override ───
       - alias: Calendar trip within 16 h
         conditions:
           - condition: trigger
             id: calendar_scan
-          # Only arm from a clean smart state. Replaces the old trip_armed
-          # helper: if we are already in override, leave it alone.
+          # Only arm from a clean smart state; if already in override, leave
+          # it alone. Self-limiting: arming flips mode to override so the next
+          # scan skips, and once the deadline passes the departure has passed
+          # too, so that candidate fails the >=60 min filter.
           - condition: state
             entity_id: select.myszolot_charge_mode
             state: smart
@@ -75,8 +87,8 @@ actions:
                 hours: 16
             response_variable: agenda
 
-          # Future-starting events naming a known destination. All-day entries
-          # (start is a bare date) are treated as a 09:00 departure.
+          # Both start and end are candidate departures. All-day entries
+          # (bare date) are treated as a 09:00 departure.
           - variables:
               trips: >-
                 {%- set ns = namespace(items=[]) -%}
@@ -85,12 +97,16 @@ actions:
                   {%- for ev in agenda[cal].events -%}
                     {%- set blob = (ev.summary ~ ' ' ~ ev.get('description', '') ~ ' ' ~ ev.get('location', '')) | lower -%}
                     {%- if blob is search(pat) -%}
-                      {%- set raw = ev.start -%}
-                      {%- set dep = (raw ~ 'T09:00:00') if raw | length == 10 else raw -%}
-                      {%- set mins = ((as_timestamp(dep) - as_timestamp(now())) / 60) | round(0) | int -%}
-                      {%- if mins >= 60 -%}
-                        {%- set ns.items = ns.items + [{'mins': mins, 'dep': dep, 'summary': ev.summary}] -%}
-                      {%- endif -%}
+                      {%- for leg in ['start', 'end'] -%}
+                        {%- set raw = ev.get(leg, '') -%}
+                        {%- if raw -%}
+                          {%- set dep = (raw ~ 'T09:00:00') if raw | length == 10 else raw -%}
+                          {%- set mins = ((as_timestamp(dep) - as_timestamp(now())) / 60) | round(0) | int -%}
+                          {%- if mins >= 60 and mins <= 960 -%}
+                            {%- set ns.items = ns.items + [{'mins': mins, 'dep': dep, 'summary': ev.summary, 'leg': leg}] -%}
+                          {%- endif -%}
+                        {%- endif -%}
+                      {%- endfor -%}
                     {%- endif -%}
                   {%- endfor -%}
                 {%- endfor -%}
@@ -119,7 +135,8 @@ actions:
             data:
               value: "{{ window_hours }}"
 
-          # Full replan: locks 96% against the deadline we just wrote.
+          # Full replan: locks 96% against the deadline we just wrote, and
+          # pushes the limit to the car even when it is away from home.
           - action: select.select_option
             target:
               entity_id: select.myszolot_charge_mode
@@ -128,37 +145,51 @@ actions:
 
           - action: notify.mobile_app_j23
             data:
-              title: "Wyjazd wykryty — ładowanie 96%"
+              title: >-
+                {{ 'Powrót' if trip.leg == 'end' else 'Wyjazd' }} — ładowanie 96%
               message: >-
-                {{ trip.summary }} — wyjazd
+                {{ trip.summary }} —
+                {{ 'powrót' if trip.leg == 'end' else 'wyjazd' }}
                 {{ as_timestamp(trip.dep) | timestamp_custom('%d-%m-%Y %H:%M') }}.
-                Override 96% w oknie {{ window_hours }} h.
+                Override 96% w oknie {{ window_hours }} h (SoC teraz
+                {{ states('sensor.myszolot_battery_level') }}%).
                 {{ 'Kabel wpięty.' if is_state('binary_sensor.myszolot_charge_cable', 'on')
                    else 'UWAGA: kabel niewpięty!' }}
 
-      # ── Return: arrived at działka / Łódź → car limit 96% ─────────────────
+      # ── Arrived at a destination with no calendar entry → 48 h fallback ───
       - alias: Arrived at trip destination
         conditions:
           - condition: trigger
             id: arrived_away
+          - condition: state
+            entity_id: select.myszolot_charge_mode
+            state: smart
         sequence:
-          # Wake first — number.set_value is silently dropped on a sleeping car.
-          - action: button.press
+          - action: input_number.set_value
             target:
-              entity_id: button.myszolot_wake
-            continue_on_error: true
-          - delay: "00:00:10"
-
-          - action: number.set_value
-            target:
-              entity_id: number.myszolot_charge_limit
+              entity_id: input_number.myszolot_custom_target_soc
             data:
               value: 96
+
+          # Maximum window: we do not know the return time on arrival. If the
+          # stay outlasts it the limit relaxes to 80 and the calendar branch
+          # re-arms 16 h before the return leg.
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.myszolot_deadline_hours
+            data:
+              value: 48
+
+          - action: select.select_option
+            target:
+              entity_id: select.myszolot_charge_mode
+            data:
+              option: override
 
           - action: notify.mobile_app_j23
             data:
               title: "Na miejscu — limit 96%"
               message: >-
                 {{ trigger.zone.attributes.friendly_name | default('Cel podróży') }}:
-                limit ładowania ustawiony na 96% (SoC teraz
+                override 96% na 48 h (SoC teraz
                 {{ states('sensor.myszolot_battery_level') }}%). Podepnij kabel.
