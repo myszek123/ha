@@ -264,11 +264,15 @@ and is not what was wanted.
     The `[łl][oó]d[zźż]` class is deliberate: Polish declension turns *Łódź*
     into *Łodzi*, so a plain `łód` alternative silently misses the far more
     common "Wyjazd do Łodzi".
-  - **A `96%` tag**, for any other destination: `Ciechanów 96%`. Pattern
-    `96\s?%`, so `96 %` and the non-breaking space phone keyboards insert also
-    match. A new destination needs a calendar edit, not an automation change.
-    Make the entry span the stay (leave → come back): both of its ends count
-    as departures, as described next.
+  - **A `NN%` tag**, for any destination: `Ciechanów:95%` charges to 95 %,
+    `Przasnysz 90%` to 90 %. Any two-digit value inside the target helper's
+    range (`input_number.myszolot_custom_target_soc`, 50–100) counts; values
+    outside it are ignored, and if an entry holds several, the highest wins. A
+    key place with a tag uses the tag; without one it uses
+    `default_trip_target` (96). `\s?` also takes `95 %` and the non-breaking
+    space phone keyboards insert. A new destination needs a calendar edit, not
+    an automation change. Make the entry span the stay (leave → come back):
+    both of its ends count as departures, as described next.
   - **Both match only at the start of a word** (a lookbehind rejects a
     preceding letter — or, for the tag, a digit, `.` or `,`). Without it
     `[łl][oó]d[zźż]` fires inside *Włodzimierz*, *Kołodziej* and *chłodzenie*
@@ -276,15 +280,19 @@ and is not what was wanted.
     inside `196%` or a rate like `lokata 3,96%`. `leżakow` also refuses
     *leżakowanie* (kindergarten nap time) while keeping *Leżakowa* /
     *Leżakowej*.
+  - **Known false positive:** an unrelated entry with a percentage in range
+    and above the current SoC — `Promocja 70%` — still arms. Values under 50
+    (`Zniżka 20%`) never do.
 - **Both legs count.** A stay-shaped entry like "Brajniki visit"
   03-09 18:00 → 08-09 20:15 means drive out at the start and drive home at the
   end, so start *and* end are candidate departures. Keying off the start alone
   missed every return leg.
-- **On a hit:** target 96 %, **deadline = time until departure** (floored to
+- **On a hit:** target = the event's `NN%` (96 for an untagged key place),
+  **deadline = time until departure** (floored to
   whole hours so it lands before you leave), then mode → `override`. The
   planner still buys the cheapest Pstryk hours inside that window rather than
   charging flat out. At home it actuates the charger; away it cannot, but
-  override still pins the car's own limit to 96 % (`restore_default=False`),
+  override still pins the car's own limit to the target (`restore_default=False`),
   so plugging in at the działka charges for the drive back.
 - **Why override and not a bare `number.set_value`:** in smart mode the
   planner's target is 80 %, so the moment SoC reaches 80 the coordinator's
@@ -296,13 +304,15 @@ and is not what was wanted.
   exclusive (iCal/Google), so the return leg steps back one day — otherwise a
   stay ending 08-09 would arm 24 h late.
 - Events under 60 min away are skipped (the deadline helper's minimum is 1 h).
-- **Arming requires two conditions**: mode is `smart` *and* SoC is below
-  `trip_target` (96). Mode alone is not an arm-once guard — override ends when
-  the target is reached as well as when the deadline passes, and target-reached
-  is the normal case, dropping straight back to `smart`. Without the SoC
-  condition the same departure re-arms every 30 min for the rest of the day,
-  flapping the car limit 80 → 96 → 80 and notifying each time. An unreadable
-  SoC still arms, which fails toward charging.
+- **Arming requires two things**: mode is `smart`, *and* SoC is below that
+  event's own target — checked per event, so a trip already satisfied (SoC 95,
+  tag 95 %) does not block a later one that needs more. Mode alone is not an
+  arm-once guard — override ends when the target is reached as well as when the
+  deadline passes, and target-reached is the normal case, dropping straight
+  back to `smart`. Without the SoC check the same departure re-arms every
+  30 min for the rest of the day, flapping the car limit 80 → target → 80 and
+  notifying each time. An unreadable SoC still arms, which fails toward
+  charging.
 - `automations/trip-helpers.yml` — reference only. It documents the
   `zone.brajniki` / `zone.lodz_mama` coordinates left over from a dropped
   arrival branch. **No automation in this repo references any zone**, and no

@@ -11,14 +11,19 @@ versioning: [SemVer](https://semver.org/).
 
 ### Added
 
-- **`96%` tag for trips to any destination.** Key places (Łódź, Brajniki,
-  Szczytno, działka) still arm on their own; any other drive now arms when its
-  calendar entry carries `96%` in the title or description — e.g.
-  `Ciechanów 96%`. Pattern `96\s?%`, so `96 %` and a phone keyboard's
-  non-breaking space also match; it must start a number, so `196%` and a rate
-  like `lokata 3,96%` do not. A new destination no longer needs an automation
-  change. Make the entry span the whole stay: its start and its end both count
-  as departures, same as for key places.
+- **`NN%` tag: trips to any destination, each with its own target SoC.** Key
+  places (Łódź, Brajniki, Szczytno, działka) still arm on their own at the
+  default 96 %. Any drive now arms when its calendar entry carries a two-digit
+  percentage in the title or description, and that number is the target:
+  `Ciechanów:95%` charges to 95 %, `Przasnysz 90%` to 90 %. Values outside the
+  target helper's range (50–100) are ignored, the highest wins when an entry
+  holds several, and a key place with a tag uses the tag. `\s?` also takes
+  `95 %` and a phone keyboard's non-breaking space; the number must not follow
+  a digit, `.` or `,`, so `196%` and a rate like `lokata 3,96%` do not count. A
+  new destination is a calendar edit, not an automation change. Make the entry
+  span the whole stay: its start and its end both count as departures. Known
+  false positive: an unrelated entry such as `Promocja 70%` arms if 70 is above
+  the current SoC.
 
 ### Fixed
 
@@ -31,9 +36,8 @@ versioning: [SemVer](https://semver.org/).
   08-09-2026: SoC hit 96 % at 13:56, and the 14:00 / 14:30 / 15:00 scans each
   flapped the car limit 80 → 96 → 80 within ~20 s and pushed a
   "Powrót — ładowanie 96 %" notification, with nothing left to charge. Arming
-  now also requires SoC to be below the trip target; an unreadable SoC still
-  arms, failing toward charging. The target is hoisted into a `trip_target`
-  variable so the condition, the helper write and the notification cannot drift.
+  now also requires SoC to be below the trip's target, checked per event; an
+  unreadable SoC still arms, failing toward charging.
 - **Trip charging missed every declined form of "Łódź."** The destination
   pattern used `łód|lod[zź]`, which matches the bare nominative *Łódź* and the
   ASCII *Lodz* but not *Łodzi* — the form Polish actually uses in a calendar

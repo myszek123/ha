@@ -4,11 +4,11 @@ description: >
   single toggle.
 
   Every 30 min, scan both family calendars for the next 16 h. An event further
-  out is ignored. An event inside the window arms Myszolot override at 96 %,
-  with the deadline set to the departure time, when it either names a key
-  destination (Łódź / Leżakowa, Brajniki, Szczytno, działka) or carries a
-  "96%" tag in its title or description (any other destination, e.g.
-  "Ciechanów 96%").
+  out is ignored. An event inside the window arms Myszolot override, with the
+  deadline set to the departure time, when it either names a key destination
+  (Łódź / Leżakowa, Brajniki, Szczytno, działka) or carries a two-digit
+  percentage in its title or description ("Ciechanów:95%"). The percentage is
+  that trip's target SoC; an untagged key place uses default_trip_target (96).
 
   BOTH ends of an event are departure candidates. A stay-shaped entry like
   "Brajniki visit" 03-09 18:00 -> 08-09 20:15 means: drive out at the start,
@@ -19,25 +19,28 @@ description: >
   coordinator's should_reset_car_limit_after_session() pushes the car limit
   back to default and a manually set 96 is wiped (observed 08-09: set 96 at
   10:09, SoC hit 80 at 10:27:53, limit reset to 80 at 10:28:00). Override locks
-  target_soc = 96 so the reset never fires, and set_mode() pushes the limit to
-  the car itself with restore_default=False, which works even when away.
+  target_soc to the trip target so the reset never fires, and set_mode() pushes
+  the limit to the car itself with restore_default=False, which works even when
+  away.
 
   One branch serves both legs. At home the planner buys the cheapest Pstryk
   hours inside the window; away it cannot actuate the charger but still pins
-  the car to 96 %, so plugging in at the działka charges for the drive back.
+  the car to the trip target, so plugging in at the działka charges for the
+  drive back.
 
   Charging is deliberately tied to departure only — never to arrival. Topping
   up on arrival would leave the car near full for the whole stay, which is bad
   for the pack and is not what was asked for.
 
-  Arming requires BOTH that the mode is smart AND that SoC is below the target.
-  Mode alone is not an arm-once guard: override also ends when the target is
-  reached, which drops straight back to smart and would let the same departure
-  re-arm every 30 min for the rest of the day.
+  Arming requires BOTH that the mode is smart AND that SoC is below that
+  event's own target. Mode alone is not an arm-once guard: override also ends
+  when the target is reached, which drops straight back to smart and would let
+  the same departure re-arm every 30 min for the rest of the day.
 mode: single
 
 variables:
-  trip_target: 96
+  # Target for a key-place trip whose calendar entry carries no NN% tag.
+  default_trip_target: 96
 
 triggers:
   - trigger: time_pattern
@@ -49,7 +52,7 @@ conditions: []
 actions:
   - choose:
 
-      # ── Calendar: a drive starts or ends within 16 h → arm 96% override ───
+      # ── Calendar: a drive starts or ends within 16 h → arm trip override ──
       - alias: Calendar trip within 16 h
         conditions:
           - condition: trigger
@@ -59,24 +62,9 @@ actions:
           - condition: state
             entity_id: select.myszolot_charge_mode
             state: smart
-
-          # ...but "mode is smart" is NOT a sufficient arm-once guard, which an
-          # earlier version of this comment claimed. Override ends on EITHER
-          # the deadline passing OR the target being reached, and target-reached
-          # is the normal case: the coordinator flips straight back to smart and
-          # restores the 80 % limit. The next 30 min scan then sees smart again,
-          # the same departure is still >60 min out, and it re-arms — limit
-          # 80->96->80 within ~20 s, plus a push notification, every half hour
-          # until departure. Observed 08-09-2026: SoC hit 96 at 13:56, then
-          # spurious re-arms at 14:00, 14:30 and 15:00.
-          #
-          # So refuse to arm when the battery is already at the trip target.
-          # There is nothing to buy and nothing to tell the driver. If SoC later
-          # sags below the target there is still time to top up, which is the
-          # behaviour we want.
-          - condition: template
-            value_template: >-
-              {{ states('sensor.myszolot_battery_level') | int(0) < trip_target }}
+          # "Mode is smart" alone is NOT an arm-once guard. The SoC-below-target
+          # check that makes it one lives in the trips template below, because
+          # the target is per event.
         sequence:
           - action: calendar.get_events
             target:
@@ -98,11 +86,22 @@ actions:
           # so the class [łl][oó]d[zźż] is what covers both, plus the
           # diacritic-free "Lodz" people type on a phone keyboard.
           #
-          # Destinations outside the key places are opted in per event with a
-          # "96%" tag in the title or description ("Ciechanów 96%"), so a new
-          # trip needs a calendar edit, not an automation edit. \s? also takes
-          # "96 %" and the non-breaking space phone keyboards insert. The tag is
-          # matched over the same summary + description + location blob.
+          # Any destination is opted in per event with a two-digit "NN%" tag in
+          # the title or description ("Ciechanów:95%"), and NN becomes that
+          # trip's target SoC, so a new trip needs a calendar edit, not an
+          # automation edit. \s? also takes "95 %" and the non-breaking space
+          # phone keyboards insert. Values outside the target helper's min-max
+          # (currently 50-100) are ignored — below 50 is a discount, not a trip
+          # — and when an entry holds several percentages the highest wins. A
+          # key place with a tag uses the tag; without one, default_trip_target.
+          #
+          # The re-arm guard is per event: a candidate is kept only while SoC is
+          # below ITS target. Override ends when the target is reached and drops
+          # back to smart, so without this the same departure re-arms every
+          # 30 min (observed 08-09-2026: 14:00, 14:30, 15:00 after SoC hit 96).
+          # Checking per event also means a trip already satisfied does not
+          # block a later one in the window that needs more. An unreadable SoC
+          # reads as 0 and arms, failing toward charging.
           #
           # Both patterns match only at the start of a word. Without the
           # lookbehind, [łl][oó]d[zźż] fires inside Włodzimierz, Kołodziej and
@@ -120,27 +119,33 @@ actions:
               trips: >-
                 {%- set ns = namespace(items=[]) -%}
                 {%- set places = '(?<![a-ząćęłńóśźż])(?:[łl][oó]d[zźż]|leżakow(?!ani)|lezakow(?!ani)|brajnik|szczytn|dzia[lł]k)' -%}
-                {%- set tag = '(?<![0-9.,])96\s?%' -%}
-                {%- set pat = places ~ '|' ~ tag -%}
+                {%- set tag = '(?<![0-9.,])([0-9]{2})\s?%' -%}
+                {%- set lo = state_attr('input_number.myszolot_custom_target_soc', 'min') | int(50) -%}
+                {%- set hi = state_attr('input_number.myszolot_custom_target_soc', 'max') | int(100) -%}
+                {%- set soc = states('sensor.myszolot_battery_level') | int(0) -%}
                 {%- for cal in agenda.keys() -%}
                   {%- for ev in agenda[cal].events -%}
                     {%- set blob = (ev.summary ~ ' ' ~ ev.get('description', '') ~ ' ' ~ ev.get('location', '')) | lower -%}
-                    {%- if blob is search(pat) -%}
-                      {%- for leg in ['start', 'end'] -%}
-                        {%- set raw = ev.get(leg, '') -%}
-                        {%- if raw -%}
-                          {%- if raw | length == 10 -%}
-                            {%- set day = (as_datetime(raw) - timedelta(days=1)).strftime('%Y-%m-%d') if leg == 'end' else raw -%}
-                            {%- set dep = day ~ 'T09:00:00' -%}
-                          {%- else -%}
-                            {%- set dep = raw -%}
+                    {%- set tagged = blob | regex_findall(tag) | map('int') | select('ge', lo) | select('le', hi) | list -%}
+                    {%- if tagged or blob is search(places) -%}
+                      {%- set target = (tagged | max) if tagged else default_trip_target -%}
+                      {%- if soc < target -%}
+                        {%- for leg in ['start', 'end'] -%}
+                          {%- set raw = ev.get(leg, '') -%}
+                          {%- if raw -%}
+                            {%- if raw | length == 10 -%}
+                              {%- set day = (as_datetime(raw) - timedelta(days=1)).strftime('%Y-%m-%d') if leg == 'end' else raw -%}
+                              {%- set dep = day ~ 'T09:00:00' -%}
+                            {%- else -%}
+                              {%- set dep = raw -%}
+                            {%- endif -%}
+                            {%- set mins = ((as_timestamp(dep) - as_timestamp(now())) / 60) | round(0) | int -%}
+                            {%- if mins >= 60 and mins <= 960 -%}
+                              {%- set ns.items = ns.items + [{'mins': mins, 'dep': dep, 'summary': ev.summary, 'leg': leg, 'target': target}] -%}
+                            {%- endif -%}
                           {%- endif -%}
-                          {%- set mins = ((as_timestamp(dep) - as_timestamp(now())) / 60) | round(0) | int -%}
-                          {%- if mins >= 60 and mins <= 960 -%}
-                            {%- set ns.items = ns.items + [{'mins': mins, 'dep': dep, 'summary': ev.summary, 'leg': leg}] -%}
-                          {%- endif -%}
-                        {%- endif -%}
-                      {%- endfor -%}
+                        {%- endfor -%}
+                      {%- endif -%}
                     {%- endif -%}
                   {%- endfor -%}
                 {%- endfor -%}
@@ -163,7 +168,7 @@ actions:
             target:
               entity_id: input_number.myszolot_custom_target_soc
             data:
-              value: "{{ trip_target }}"
+              value: "{{ trip.target }}"
 
           - action: input_number.set_value
             target:
@@ -171,8 +176,8 @@ actions:
             data:
               value: "{{ window_hours }}"
 
-          # Full replan: locks 96% against the deadline we just wrote, and
-          # pushes the limit to the car even when it is away from home.
+          # Full replan: locks the trip target against the deadline we just
+          # wrote, and pushes the limit to the car even when it is away from home.
           - action: select.select_option
             target:
               entity_id: select.myszolot_charge_mode
@@ -182,12 +187,12 @@ actions:
           - action: notify.mobile_app_j23
             data:
               title: >-
-                {{ 'Powrót' if trip.leg == 'end' else 'Wyjazd' }} — ładowanie {{ trip_target }}%
+                {{ 'Powrót' if trip.leg == 'end' else 'Wyjazd' }} — ładowanie {{ trip.target }}%
               message: >-
                 {{ trip.summary }} —
                 {{ 'powrót' if trip.leg == 'end' else 'wyjazd' }}
                 {{ as_timestamp(trip.dep) | timestamp_custom('%d-%m-%Y %H:%M') }}.
-                Override {{ trip_target }}% w oknie {{ window_hours }} h (SoC teraz
+                Override {{ trip.target }}% w oknie {{ window_hours }} h (SoC teraz
                 {{ states('sensor.myszolot_battery_level') }}%).
                 {{ 'Kabel wpięty.' if is_state('binary_sensor.myszolot_charge_cable', 'on')
                    else 'UWAGA: kabel niewpięty!' }}
