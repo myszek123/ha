@@ -257,11 +257,25 @@ and is not what was wanted.
 
 - **Trigger** (`time_pattern` every 30 min): scans
   `calendar.jjsateam_gmail_com` and `calendar.jakubmyszka_gmail_com` for the
-  next 16 h. Events further out are ignored. Matches
-  `[łl][oó]d[zźż]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k` over
-  summary + description + location. The `[łl][oó]d[zźż]` class is deliberate:
-  Polish declension turns *Łódź* into *Łodzi*, so a plain `łód` alternative
-  silently misses the far more common "Wyjazd do Łodzi".
+  next 16 h. Events further out are ignored.
+- **What counts as a trip** — either of two things, matched over
+  summary + description + location:
+  - **A key place:** `[łl][oó]d[zźż]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k`.
+    The `[łl][oó]d[zźż]` class is deliberate: Polish declension turns *Łódź*
+    into *Łodzi*, so a plain `łód` alternative silently misses the far more
+    common "Wyjazd do Łodzi".
+  - **A `96%` tag**, for any other destination: `Ciechanów 96%`. Pattern
+    `96\s?%`, so `96 %` and the non-breaking space phone keyboards insert also
+    match. A new destination needs a calendar edit, not an automation change.
+    Make the entry span the stay (leave → come back): both of its ends count
+    as departures, as described next.
+  - **Both match only at the start of a word** (a lookbehind rejects a
+    preceding letter — or, for the tag, a digit, `.` or `,`). Without it
+    `[łl][oó]d[zźż]` fires inside *Włodzimierz*, *Kołodziej* and *chłodzenie*
+    — a birthday or a plumber would arm a 96 % charge — and the tag fires
+    inside `196%` or a rate like `lokata 3,96%`. `leżakow` also refuses
+    *leżakowanie* (kindergarten nap time) while keeping *Leżakowa* /
+    *Leżakowej*.
 - **Both legs count.** A stay-shaped entry like "Brajniki visit"
   03-09 18:00 → 08-09 20:15 means drive out at the start and drive home at the
   end, so start *and* end are candidate departures. Keying off the start alone

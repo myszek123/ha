@@ -7,7 +7,18 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
-## [1.5.12] — 08-09-2026
+## [1.5.12] — 10-09-2026
+
+### Added
+
+- **`96%` tag for trips to any destination.** Key places (Łódź, Brajniki,
+  Szczytno, działka) still arm on their own; any other drive now arms when its
+  calendar entry carries `96%` in the title or description — e.g.
+  `Ciechanów 96%`. Pattern `96\s?%`, so `96 %` and a phone keyboard's
+  non-breaking space also match; it must start a number, so `196%` and a rate
+  like `lokata 3,96%` do not. A new destination no longer needs an automation
+  change. Make the entry span the whole stay: its start and its end both count
+  as departures, same as for key places.
 
 ### Fixed
 
@@ -30,7 +41,10 @@ versioning: [SemVer](https://semver.org/).
   drops the `ó`, so neither alternative fired. The Łódź run is the longest
   trip on the list, so the one drive that most needs 96 % was the one that
   silently never armed — no match, no notification, no error. Pattern is now
-  `[łl][oó]d[zźż]`, verified against the live template engine.
+  `[łl][oó]d[zźż]`, anchored to the start of a word so it does not fire inside
+  *Włodzimierz*, *Kołodziej* or *chłodzenie*; verified against the live template
+  engine. The street alternative `leżakow` likewise no longer matches
+  *leżakowanie* (kindergarten nap time).
 - **All-day trips armed the return leg 24 h late.** All-day `end` dates are
   exclusive (iCal/Google), so a stay whose last day is 08-09 arrives as
   `end: 2026-09-09` and the return departure was computed for the following

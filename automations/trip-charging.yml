@@ -4,9 +4,11 @@ description: >
   single toggle.
 
   Every 30 min, scan both family calendars for the next 16 h. An event further
-  out is ignored. An event inside the window naming a known destination
-  (Łódź / Leżakowa, Brajniki, Szczytno, działka) arms Myszolot override at 96 %
-  with the deadline set to the departure time.
+  out is ignored. An event inside the window arms Myszolot override at 96 %,
+  with the deadline set to the departure time, when it either names a key
+  destination (Łódź / Leżakowa, Brajniki, Szczytno, działka) or carries a
+  "96%" tag in its title or description (any other destination, e.g.
+  "Ciechanów 96%").
 
   BOTH ends of an event are departure candidates. A stay-shaped entry like
   "Brajniki visit" 03-09 18:00 -> 08-09 20:15 means: drive out at the start,
@@ -96,6 +98,20 @@ actions:
           # so the class [łl][oó]d[zźż] is what covers both, plus the
           # diacritic-free "Lodz" people type on a phone keyboard.
           #
+          # Destinations outside the key places are opted in per event with a
+          # "96%" tag in the title or description ("Ciechanów 96%"), so a new
+          # trip needs a calendar edit, not an automation edit. \s? also takes
+          # "96 %" and the non-breaking space phone keyboards insert. The tag is
+          # matched over the same summary + description + location blob.
+          #
+          # Both patterns match only at the start of a word. Without the
+          # lookbehind, [łl][oó]d[zźż] fires inside Włodzimierz, Kołodziej and
+          # chłodzenie — a birthday or a plumber would arm a 96 % charge — and
+          # the tag fires inside "196%" or a rate like "lokata 3,96%". The letter
+          # class lists lowercase Polish letters because the blob is lowercased
+          # before matching. leżakow(?!ani) keeps the street (Leżakowa,
+          # Leżakowej) but not "leżakowanie", kindergarten nap time.
+          #
           # All-day end dates are EXCLUSIVE (iCal/Google): a stay whose last
           # day is 08-09 arrives here as end="2026-09-09". Step back one day
           # so the return leg is not armed 24 h late. Date-only arithmetic,
@@ -103,7 +119,9 @@ actions:
           - variables:
               trips: >-
                 {%- set ns = namespace(items=[]) -%}
-                {%- set pat = '[łl][oó]d[zźż]|leżakow|lezakow|brajnik|szczytn|dzia[lł]k' -%}
+                {%- set places = '(?<![a-ząćęłńóśźż])(?:[łl][oó]d[zźż]|leżakow(?!ani)|lezakow(?!ani)|brajnik|szczytn|dzia[lł]k)' -%}
+                {%- set tag = '(?<![0-9.,])96\s?%' -%}
+                {%- set pat = places ~ '|' ~ tag -%}
                 {%- for cal in agenda.keys() -%}
                   {%- for ev in agenda[cal].events -%}
                     {%- set blob = (ev.summary ~ ' ' ~ ev.get('description', '') ~ ' ' ~ ev.get('location', '')) | lower -%}
