@@ -8,9 +8,19 @@ description: >
   sessions are never interrupted. Presence = garage vision + GPS not contradicting.
   Live hold: Tesla charging + Autel on + GPS home must not Remote-off on a
   vision-empty blip (20-08-2026 14:12). State-guarded. Scheduling lives in the
-  myszolot coordinator.
+  myszolot coordinator. The Autel is started only when its switch is really off
+  and the car is not already charging — "unavailable" means do nothing, since a
+  start on an unreachable charger only earns a Rejected (10-09-2026).
 triggers:
+  # State changes only (to: null). The sensor's attributes churn on every
+  # coordinator refresh, and an attribute-only trigger re-ran this actuator
+  # dozens of extra times an hour. should_charge is the one attribute worth
+  # reacting to at once; anything else waits for the 1-minute tick.
   - entity_id: sensor.myszolot_charge_reason
+    trigger: state
+    to: null
+  - entity_id: sensor.myszolot_charge_reason
+    attribute: should_charge
     trigger: state
   - minutes: /1
     trigger: time_pattern
@@ -63,17 +73,29 @@ actions:
                     - switch.garage240socket
               - delay:
                   seconds: 5
+          # Start the Autel only when it is really off and the car is not
+          # already charging. "not on" also matched unavailable: after the
+          # 10-09-2026 WiFi drop the charger came back mid-charge with this
+          # switch stuck unavailable, every run sent RemoteStartTransaction, the
+          # charger answered Rejected, and OCPP re-raised a "Start transaction
+          # failed" notification ~700 times. Unavailable means we cannot control
+          # it anyway, so do nothing.
           - if:
               - condition: template
-                value_template: "{{ not is_state('switch.autel_charge_control', 'on') }}"
+                value_template: >-
+                  {{ is_state('switch.autel_charge_control', 'off')
+                     and states('sensor.myszolot_charging') not in ['charging', 'starting'] }}
             then:
               - action: switch.turn_on
                 target:
                   entity_id: switch.autel_charge_control
+          # Skip while the number is unavailable: set_value on it only logs
+          # "entity not available" (348 times during the 10-09 outage).
           - if:
               - condition: template
                 value_template: >-
-                  {{ (states('number.autel_maximum_current') | int(-1))
+                  {{ states('number.autel_maximum_current') not in ['unavailable', 'unknown']
+                     and (states('number.autel_maximum_current') | int(-1))
                      != ([state_attr('sensor.myszolot_charge_reason', 'target_amps') | int(0), 11] | min) }}
             then:
               - action: number.set_value
