@@ -65,6 +65,11 @@ sections:
       - [AdGuard](https://adguard.myszki.net.pl/) 🛡️ DNS with Ad blocking
 
 
+      ## Printers
+
+      - [Brother HL-L2442DW](http://brother.lan/home/status.html) 🖨️ status — login `**z2442!`
+
+
       ## Monitoring & Backup
 
       - [Netdata](https://monitor.myszki.net.pl/) 📊 All machines, one dashboard
