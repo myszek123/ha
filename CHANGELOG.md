@@ -7,24 +7,92 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.12] — 10-09-2026
+
+### Added
+
+- **`NN%` tag: trips to any destination, each with its own target SoC.** Key
+  places (Łódź, Brajniki, Szczytno, działka) still arm on their own at the
+  default 96 %. Any drive now arms when its calendar entry carries a two-digit
+  percentage in the title or description, and that number is the target:
+  `Ciechanów:95%` charges to 95 %, `Przasnysz 90%` to 90 %. Values outside the
+  target helper's range (50–100) are ignored, the highest wins when an entry
+  holds several, and a key place with a tag uses the tag. `\s?` also takes
+  `95 %` and a phone keyboard's non-breaking space; the number must not follow
+  a digit, `.` or `,`, so `196%` and a rate like `lokata 3,96%` do not count. A
+  new destination is a calendar edit, not an automation change. Make the entry
+  span the whole stay: its start and its end both count as departures. Known
+  false positive: an unrelated entry such as `Promocja 70%` arms if 70 is above
+  the current SoC.
+
+### Fixed
+
+- **Trip charging re-armed every 30 min once the car was already charged.**
+  The `mode == smart` condition was documented as an arm-once guard. It is not:
+  override ends on *either* the deadline passing *or* the target being reached,
+  and target-reached is the normal case — the coordinator drops straight back to
+  smart and restores the 80 % limit. The next scan then saw smart again, found
+  the same departure still more than 60 min out, and re-armed. Observed
+  08-09-2026: SoC hit 96 % at 13:56, and the 14:00 / 14:30 / 15:00 scans each
+  flapped the car limit 80 → 96 → 80 within ~20 s and pushed a
+  "Powrót — ładowanie 96 %" notification, with nothing left to charge. Arming
+  now also requires SoC to be below the trip's target, checked per event; an
+  unreadable SoC still arms, failing toward charging.
+- **Trip charging missed every declined form of "Łódź."** The destination
+  pattern used `łód|lod[zź]`, which matches the bare nominative *Łódź* and the
+  ASCII *Lodz* but not *Łodzi* — the form Polish actually uses in a calendar
+  entry ("Wyjazd do Łodzi", "U mamy w Łodzi"). The declined stem keeps `ł` but
+  drops the `ó`, so neither alternative fired. The Łódź run is the longest
+  trip on the list, so the one drive that most needs 96 % was the one that
+  silently never armed — no match, no notification, no error. Pattern is now
+  `[łl][oó]d[zźż]`, anchored to the start of a word so it does not fire inside
+  *Włodzimierz*, *Kołodziej* or *chłodzenie*; verified against the live template
+  engine. The street alternative `leżakow` likewise no longer matches
+  *leżakowanie* (kindergarten nap time).
+- **All-day trips armed the return leg 24 h late.** All-day `end` dates are
+  exclusive (iCal/Google), so a stay whose last day is 08-09 arrives as
+  `end: 2026-09-09` and the return departure was computed for the following
+  morning — after you were already home. The end leg now steps back one day.
+  Date-only arithmetic, so DST transitions cannot shift the 09:00.
+
+### Changed
+
+- `mode: queued` / `max: 5` → `mode: single`. The queue existed to protect a
+  zone-arrival trigger that no longer exists; with one 30 min trigger a run
+  cannot overlap itself.
+- Dropped the dead upper clamp in `window_hours` — the `<= 960 min` filter
+  already bounds the window to 16 h, well inside the helper's 1–48 range.
+
+### Documentation
+
+- **Corrected the 1.5.11 notes below, which described a feature that never
+  shipped.** They documented a "Return branch" triggering on `zone` enter and
+  pushing `number.myszolot_charge_limit = 96` on arrival. That branch was
+  removed before release (commit *Drop arrival branch: charge only before
+  departure*); the shipped automation has a single `time_pattern` trigger and
+  references no zone. README carried the same phantom branch.
+- `automations/trip-helpers.yml` claimed its zones were required by
+  `trip-charging.yml`, and that charger-lockdown and presence depended on
+  `zone.wisniewscy`'s geometry. Both false — no automation in this repo
+  references any zone, and charger-lockdown keys on
+  `device_tracker.myszolot_location`. The file is now marked reference-only;
+  the coordinates and the Brajniki-vs-Szczytno geocoding are kept.
+
 ## [1.5.11] — 08-09-2026
 
 ### Added
 
 - **Trip charging** (automations only — no integration code changed).
-  `automations/trip-charging.yml` is a single automation covering both
-  directions, so the whole behaviour can be turned off with one toggle.
-  Outbound: scans both family calendars every 30 min for a drive to Łódź /
-  Brajniki / Szczytno starting within 16 h and arms override at 96 % with the
-  deadline set to the actual departure time, so the existing planner still buys
-  the cheapest hours inside the window instead of charging flat out. Return:
-  pushes a 96 % car limit on arrival at `zone.brajniki` / `zone.wisniewscy` /
-  `zone.lodz_mama` — Brajniki (the działka, gmina Jedwabno) and Szczytno town
-  are 13 km apart and need separate zones —
-  no price optimisation there, since neither site is on Pstryk and the planner
-  does not actuate away from home. Runs `queued` so a zone arrival is not
-  dropped during a calendar scan. Requires `zone.brajniki` and `zone.lodz_mama`
-  (see `automations/trip-helpers.yml`); `zone.wisniewscy` already existed.
+  `automations/trip-charging.yml` scans both family calendars every 30 min for
+  a drive to Łódź / Brajniki / Szczytno within the next 16 h and arms override
+  at 96 % with the deadline set to the departure time, so the existing planner
+  still buys the cheapest hours inside the window instead of charging flat out.
+  Both legs of a stay-shaped event count as departures: the start is the drive
+  out, the end is the drive home. At home the planner actuates the charger;
+  away it cannot, but override still pins the car's own limit to 96 %, so
+  plugging in at the działka charges for the drive back. Charging is tied to
+  departure only — never arrival, which would hold the pack near full for the
+  whole stay.
 
 ## [1.5.10] — 30-08-2026
 
