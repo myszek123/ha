@@ -27,6 +27,19 @@ versioning: [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Charging actuator no longer loops start commands at an unreachable
+  charger.** After the 10-09-2026 WiFi drop, `switch.autel_charge_control`
+  stayed `unavailable` although the charger was charging again. The start
+  guard `not is_state(..., 'on')` is also true for `unavailable`, so every run
+  sent `RemoteStartTransaction`, the charger answered Rejected, and the OCPP
+  integration re-raised *"Start transaction failed"* 701 times. The Autel is
+  now started only when its switch is really `off` and the car is not already
+  charging. The max-current write is skipped while that number is
+  unavailable, and the `charge_reason` trigger ignores attribute-only updates
+  (`to: null` plus an `attribute: should_charge` trigger), which had pushed
+  the actuator from 60 to 106–174 runs/h. While the charger's OCPP entities
+  stay unavailable HA can neither start nor stop it; power-cycle the charger
+  to restore control.
 - **Trip charging re-armed every 30 min once the car was already charged.**
   The `mode == smart` condition was documented as an arm-once guard. It is not:
   override ends on *either* the deadline passing *or* the target being reached,
