@@ -1,0 +1,102 @@
+# Warn when the Autel charger is unreachable from HA.
+#
+# 10-09-2026: after a WiFi drop the charger came back online (OCPP ping/pong
+# alive) but switch.autel_charge_control stayed unavailable for days. HA could
+# neither start nor stop charging, and overnight 11/12-09 a planned charge to
+# 90 % silently never happened (car at no_power from 20:19). An OCPP reload and
+# TriggerMessage did not help; power-cycling the charger is the fix.
+#
+# All three share one notification tag, so they replace each other on the
+# phone instead of stacking; alert_once keeps updates silent (Android).
+
+- id: myszolot_autel_offline
+  alias: Myszolot - Autel offline
+  description: >
+    switch.autel_charge_control has been unavailable for 10 minutes, so HA can
+    no longer start or stop the Autel. Notifies once per outage.
+  triggers:
+    - trigger: state
+      entity_id: switch.autel_charge_control
+      to: unavailable
+      for: "00:10:00"
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: Autel charger offline"
+        message: >-
+          HA lost control of the Autel (charge control unavailable for 10 min),
+          so it cannot start or stop charging. Power-cycle the charger.
+          Car {{ states('sensor.myszolot_battery_level') }} %,
+          {{ states('sensor.myszolot_charging') }}.
+        data:
+          tag: myszolot-autel-offline
+          alert_once: true
+  mode: single
+
+- id: myszolot_autel_offline_charge_blocked
+  alias: Myszolot - Planned charge blocked by offline Autel
+  description: >
+    Safety net: the planner wants to charge (should_charge) but the Autel has
+    been unavailable for at least 10 minutes, so no power reaches the car.
+    Also covers an outage that began before this automation existed. Checked
+    every 30 min, notifies at most every 2 h, quiet 23:30–06:00.
+  triggers:
+    - trigger: time_pattern
+      minutes: "/30"
+  conditions:
+    - condition: state
+      entity_id: switch.autel_charge_control
+      state: unavailable
+      for: "00:10:00"
+    - condition: template
+      value_template: >-
+        {{ state_attr('sensor.myszolot_charge_reason', 'should_charge')
+           in [true, 1, 'true', 'True', 'on', 'yes'] }}
+    - condition: time
+      after: "06:00:00"
+      before: "23:30:00"
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none
+           or (now() - this.attributes.last_triggered).total_seconds() >= 7200 }}
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: planned charge blocked"
+        message: >-
+          Planner wants to charge ({{ states('sensor.myszolot_charge_reason') }},
+          target {{ state_attr('sensor.myszolot_charge_reason', 'target_soc') }} %)
+          but the Autel is offline, so the car gets no power
+          (now {{ states('sensor.myszolot_battery_level') }} %,
+          {{ states('sensor.myszolot_charging') }}). Power-cycle the charger.
+        data:
+          tag: myszolot-autel-offline
+          alert_once: true
+  mode: single
+
+- id: myszolot_autel_back_online
+  alias: Myszolot - Autel back online
+  description: >
+    Autel control recovered after being unavailable for at least 10 minutes.
+    Replaces the offline notification.
+  triggers:
+    - trigger: state
+      entity_id: switch.autel_charge_control
+      from: unavailable
+      to:
+        - "on"
+        - "off"
+  conditions:
+    - condition: template
+      value_template: >-
+        {{ (trigger.to_state.last_changed - trigger.from_state.last_changed).total_seconds() >= 600 }}
+  actions:
+    - action: notify.mobile_app_j23
+      data:
+        title: "Myszolot: Autel back online"
+        message: >-
+          HA controls the Autel again (charge control {{ trigger.to_state.state }}).
+          Charging follows the plan: {{ states('sensor.myszolot_charge_reason') }}.
+        data:
+          tag: myszolot-autel-offline
+  mode: single

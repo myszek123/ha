@@ -11,6 +11,14 @@ versioning: [SemVer](https://semver.org/).
 
 ### Added
 
+- **Phone alert when the Autel charger is offline**
+  (`automations/autel-offline-notify.yml`). Once `switch.autel_charge_control`
+  has been unavailable for 10 min, HA notifies. It then reminds while a planned
+  charge is blocked by the outage (checked every 30 min, at most every 2 h,
+  quiet 23:30–06:00), and reports recovery. All three share one notification
+  tag, so they replace each other instead of stacking. Overnight 11/12-09-2026
+  the charger stayed unreachable after a WiFi drop and a planned charge
+  silently never ran.
 - **`NN%` tag: trips to any destination, each with its own target SoC.** Key
   places (Łódź, Brajniki, Szczytno, działka) still arm on their own at the
   default 96 %. Any drive now arms when its calendar entry carries a two-digit
@@ -27,6 +35,12 @@ versioning: [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Charging actuator no longer toggles the car's charge switch every minute
+  while the Autel is offline.** The Start branch turned `switch.myszolot_charge`
+  on whenever it was "not on". With no power the car rejected the command and
+  flipped back to off, so it repeated every minute: 420 on/off toggles overnight
+  11/12-09-2026. It now runs only while the Autel is controllable and the car
+  switch is really `off`.
 - **Charging actuator no longer loops start commands at an unreachable
   charger.** After the 10-09-2026 WiFi drop, `switch.autel_charge_control`
   stayed `unavailable` although the charger was charging again. The start
