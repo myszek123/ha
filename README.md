@@ -323,13 +323,14 @@ and is not what was wanted.
 - `automations/cable-reminder.yml`
 - `automations/location-override-reset.yml`
 - `automations/dashboard-card.yml` (paste as Manual card)
-- `automations/autel-offline-notify.yml`: phone alerts when `switch.autel_charge_control`
-  has been unavailable for 10 min (HA can no longer start or stop the Autel). A
-  reminder follows while a planned charge is blocked (at most every 2 h, quiet
-  23:30–06:00), and a note when control is back. All three share one
-  notification tag. The actuator also stops asking the car to charge while the
-  Autel is unavailable. Fix a stuck charger by power-cycling it; an OCPP reload
-  did not help on 10-09-2026.
+- `automations/autel-offline-notify.yml`: a watchdog checks every minute and
+  alerts the phone once `switch.autel_charge_control` has been unavailable for
+  10 min (HA can no longer start or stop the Autel). It repeats at most every
+  2 h, never 22:00–07:00, and says whether a planned charge is blocked. On
+  recovery it sends a short note by day and silently clears the alert at night.
+  The actuator also stops asking the car to charge while the Autel is
+  unavailable. Fix a stuck charger by power-cycling it; an OCPP reload did not
+  help on 10-09-2026.
 
 ## Voice announcements (xAI Grok TTS)
 

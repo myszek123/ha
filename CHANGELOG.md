@@ -12,13 +12,14 @@ versioning: [SemVer](https://semver.org/).
 ### Added
 
 - **Phone alert when the Autel charger is offline**
-  (`automations/autel-offline-notify.yml`). Once `switch.autel_charge_control`
-  has been unavailable for 10 min, HA notifies. It then reminds while a planned
-  charge is blocked by the outage (checked every 30 min, at most every 2 h,
-  quiet 23:30–06:00), and reports recovery. All three share one notification
-  tag, so they replace each other instead of stacking. Overnight 11/12-09-2026
-  the charger stayed unreachable after a WiFi drop and a planned charge
-  silently never ran.
+  (`automations/autel-offline-notify.yml`). A watchdog checks every minute and
+  notifies once `switch.autel_charge_control` has been unavailable for 10 min,
+  saying whether a planned charge is being blocked and for how long. It repeats
+  at most every 2 h and never 22:00–07:00, so an overnight outage is reported at
+  07:00. Recovery gets a short note by day and silently clears the alert at
+  night. Both share one notification tag, so alerts replace each other instead
+  of stacking. Overnight 11/12-09-2026 the charger stayed unreachable after a
+  WiFi drop and a planned charge silently never ran.
 - **`NN%` tag: trips to any destination, each with its own target SoC.** Key
   places (Łódź, Brajniki, Szczytno, działka) still arm on their own at the
   default 96 %. Any drive now arms when its calendar entry carries a two-digit
