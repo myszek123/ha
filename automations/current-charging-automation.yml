@@ -10,7 +10,9 @@ description: >
   vision-empty blip (20-08-2026 14:12). State-guarded. Scheduling lives in the
   myszolot coordinator. The Autel is started only when its switch is really off
   and the car is not already charging — "unavailable" means do nothing, since a
-  start on an unreachable charger only earns a Rejected (10-09-2026).
+  start on an unreachable charger only earns a Rejected (10-09-2026). The car's
+  charge switch is likewise turned on only while the Autel is controllable and
+  the car switch is really off (12-09-2026).
 triggers:
   # State changes only (to: null). The sensor's attributes churn on every
   # coordinator refresh, and an attribute-only trigger re-ran this actuator
@@ -115,11 +117,18 @@ actions:
                   entity_id: number.myszolot_charge_current
                 data:
                   value: "{{ [state_attr('sensor.myszolot_charge_reason', 'target_amps') | int, 11] | min }}"
+          # Ask the car to charge only while HA controls the Autel, and only
+          # when the car switch is really off. With the Autel unavailable the
+          # car has no power, rejects the command and flips straight back to
+          # off, so "not on" re-sent turn_on every minute: 420 on/off toggles
+          # overnight 11/12-09-2026, each one a command to the car. An
+          # unavailable car switch is skipped for the same reason.
           - if:
               - condition: template
                 value_template: >-
                   {{ is_state('device_tracker.myszolot_location', 'home')
-                     and not is_state('switch.myszolot_charge', 'on') }}
+                     and states('switch.autel_charge_control') not in ['unavailable', 'unknown']
+                     and is_state('switch.myszolot_charge', 'off') }}
             then:
               - action: switch.turn_on
                 target:
