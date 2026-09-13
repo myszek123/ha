@@ -36,6 +36,17 @@ versioning: [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Missing next-day prices no longer cut the charging window at midnight.**
+  The planner only considered hours that had a price, so when Pstryk had not
+  published tomorrow yet, every hour after midnight counted as unavailable. On
+  13-09-2026 (Pstryk could not resolve its API), an override to 64 % set at
+  21:31 with a deadline of 06:31 only saw 23:00: it reported max ~55 %, called
+  the target unreachable and charged at once instead of in the cheap night
+  hours. Hours without a published price are now estimated from the same hour
+  a day earlier until real prices arrive, prices are mapped by their timestamp
+  rather than list position, and tomorrow's prices no longer duplicate hours
+  in 48 h mode. `sensor.myszolot_charge_reason` and
+  `sensor.myszolot_charge_schedule` expose `estimated_price_hours`.
 - **Charging actuator no longer toggles the car's charge switch every minute
   while the Autel is offline.** The Start branch turned `switch.myszolot_charge`
   on whenever it was "not on". With no power the car rejected the command and
