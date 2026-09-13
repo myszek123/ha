@@ -5,7 +5,8 @@ Rebuild Myszolot home-charging session log from Home Assistant long-term statist
 Sources (HA recorder statistics, hourly):
   - sensor.myszolot_charge_energy_added  (lifetime sum → per-hour kWh deltas)
   - sensor.pstryk_current_buy_price      (hourly mean — YOUR Pstryk buy price)
-  - sensor.autel_energy_active_import_register[_2]  (optional wall kWh cross-check)
+  - sensor.autel_energy_active_import_register  (optional wall kWh cross-check;
+    its 31-05..13-09-2026 history was merged in from the old `_2` entity id)
 
 Output:
   ~/myszolot-charging-log.csv
@@ -48,7 +49,6 @@ out = {}
 for sid in [
     "sensor.myszolot_charge_energy_added",
     "sensor.pstryk_current_buy_price",
-    "sensor.autel_energy_active_import_register_2",
     "sensor.autel_energy_active_import_register",
 ]:
     mid = c.execute(
@@ -92,7 +92,6 @@ def rebuild(data: dict) -> list[dict]:
     }
     autel: dict[int, float] = {}
     for key in (
-        "sensor.autel_energy_active_import_register_2",
         "sensor.autel_energy_active_import_register",
     ):
         for r in data.get(key, []):
