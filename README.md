@@ -12,6 +12,7 @@ Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. 
 - **Car charge-limit replan** (feature flag, **default ON**): change target SoC on the Tesla → replan (override keeps absolute deadline); when target is reached, restore car limit to **80%** for the next session. Disable under Configure if unwanted.
 - **Feasibility warnings**: Surfaces max reachable SoC at current amps when the target cannot be met in time
 - **Battery health**: Emergency min-SoC floor; daily charge-start debounce
+- **Late plug-in**: if the planned start is missed, the window is recalculated from now when you plug in (current cheap minutes are used; isolated blocks of 10 min or less are dropped). A live session is then locked — no mid-charge Remote-off to wait for a tidier packing
 - **Continuous sessions**: Adjacent scheduled hours merge into uninterrupted charging windows
 - **Location override**: Force "at home" if device tracker is unreliable
 - **Live home hold**: Tesla charging + Autel on + GPS home → ignore garage-vision empty (do not Remote-off)

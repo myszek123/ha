@@ -35,6 +35,7 @@ from .const import (
     REASON_PRICE_TOO_HIGH,
     REASON_SCHEDULED, REASON_WAITING_FOR_SESSION, REASON_NO_ELIGIBLE_HOURS,
     REASON_HOME_NOT_PLUGGED, REASON_TARGET_UNREACHABLE,
+    MIN_SESSION_MINUTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +77,91 @@ def _get_pstryk_tomorrow_prices(hass: HomeAssistant, tomorrow_str: str) -> list[
     return tomorrow_prices
 
 
+def current_hour_minutes_left(now_dt: datetime) -> int:
+    """Whole minutes remaining in today's current clock hour (1–60)."""
+    left = 60 - int(now_dt.minute)
+    return left if left > 0 else 0
+
+
+def slot_capacity_kwh(hour_idx: int, now_dt: datetime, max_kWh_per_hour: float) -> float:
+    """kWh available in a price-grid hour. Today's current hour is partial."""
+    if max_kWh_per_hour <= 0:
+        return 0.0
+    if hour_idx == now_dt.hour:
+        mins = current_hour_minutes_left(now_dt)
+        if mins <= 0:
+            return 0.0
+        return max_kWh_per_hour * mins / 60.0
+    return max_kWh_per_hour
+
+
+def session_length_minutes(session: dict) -> float:
+    return (session["end"] - session["start"]).total_seconds() / 60.0
+
+
+def drop_short_sessions(
+    sessions: list[dict],
+    min_minutes: int = MIN_SESSION_MINUTES,
+) -> list[dict]:
+    """Drop isolated blocks of min_minutes or shorter. Grouped hours are kept."""
+    return [s for s in sessions if session_length_minutes(s) > min_minutes]
+
+
+def frozen_plan_stale(
+    *,
+    frozen: list[dict] | None,
+    frozen_hour: tuple[date_type, int] | None,
+    frozen_signature: Any,
+    now: datetime,
+    signature: Any,
+    charging_started: bool,
+    locked_session_end: datetime | None,
+    min_minutes: int = MIN_SESSION_MINUTES,
+) -> str | None:
+    """Why the published plan should be rebuilt, or None to keep it.
+
+    Unplugged: freeze inside the hour so 12:31 does not slide to 12:32.
+    Rebuild on hour change, input change, lock expiry, elapsed window, or
+    a live window that has ≤ min_minutes left and never started.
+    """
+    if not frozen:
+        return "empty"
+    if signature != frozen_signature:
+        return "inputs"
+    if frozen_hour != (now.date(), now.hour):
+        return "hour"
+    if charging_started:
+        if locked_session_end is None or now >= locked_session_end:
+            return "lock_expired"
+        return None
+    upcoming = [s for s in frozen if s["end"] > now]
+    if not upcoming:
+        return "elapsed"
+    nxt = min(upcoming, key=lambda s: s["start"])
+    remaining = (nxt["end"] - now).total_seconds() / 60.0
+    if nxt["start"] <= now and remaining <= min_minutes:
+        return "short"
+    return None
+
+
+def should_start_replan(
+    *,
+    charging_started: bool,
+    start_replan_done: bool,
+    cable_connected: bool,
+    is_home: bool,
+    sessions: list[dict],
+    now: datetime,
+) -> bool:
+    """True when a session is actually beginning: cable in, inside the window.
+
+    Do not use hold-slack — plugging in 5 min early must still wait.
+    """
+    if charging_started or start_replan_done or not cable_connected or not is_home:
+        return False
+    return is_in_session(sessions, now)
+
+
 def build_schedule(
     all_prices: list[dict],
     E_needed: float,
@@ -83,9 +169,15 @@ def build_schedule(
     now_dt: datetime,
     deadline_hours: int = 24,
     max_price: float | None = None,
+    prefer_current_hour: bool = False,
 ) -> list[dict]:
     """
     Fractional knapsack: select cheapest eligible hours to cover E_needed.
+
+    Today's current hour only has the minutes still left (a 13:35 tick cannot
+    pretend 13:00–13:35 is still available). prefer_current_hour takes those
+    remaining minutes first when already plugged in, so 12:45–13:00 is used
+    instead of waiting for a slightly cheaper slot tomorrow.
 
     Returns list of {hour, minutes, kWh, cost, full} sorted chronologically.
     """
@@ -98,16 +190,23 @@ def build_schedule(
         if h["hour"] >= now_hour
         and h["hour"] < now_hour + deadline_hours
         and (max_price is None or h["price"] <= max_price)
+        and slot_capacity_kwh(h["hour"], now_dt, max_kWh_per_hour) > 0
     ]
-    eligible.sort(key=lambda h: h["price"])
 
     schedule: list[dict] = []
     remaining = E_needed
-    for slot in eligible:
+
+    def _take(slot: dict) -> None:
+        nonlocal remaining
         if remaining <= 0:
-            break
-        allocate_kWh = min(max_kWh_per_hour, remaining)
+            return
+        cap = slot_capacity_kwh(slot["hour"], now_dt, max_kWh_per_hour)
+        if cap <= 0:
+            return
+        allocate_kWh = min(cap, remaining)
         allocate_minutes = int(allocate_kWh / max_kWh_per_hour * 60)
+        if allocate_minutes <= 0:
+            return
         schedule.append(
             {
                 "hour": slot["hour"],
@@ -118,6 +217,18 @@ def build_schedule(
             }
         )
         remaining -= allocate_kWh
+
+    if prefer_current_hour:
+        current = next((h for h in eligible if h["hour"] == now_hour), None)
+        if current is not None:
+            _take(current)
+            eligible = [h for h in eligible if h["hour"] != now_hour]
+
+    eligible.sort(key=lambda h: h["price"])
+    for slot in eligible:
+        if remaining <= 0:
+            break
+        _take(slot)
 
     return sorted(schedule, key=lambda s: s["hour"])
 
@@ -193,13 +304,18 @@ def max_energy_in_window(
 
     now_hour = now_dt.hour
     if all_prices:
-        n_slots = sum(
-            1
-            for h in all_prices
-            if h["hour"] >= now_hour and h["hour"] < now_hour + deadline_hours
-        )
-        if n_slots > 0:
-            return round(n_slots * max_kWh_per_hour, 4)
+        total = 0.0
+        n = 0
+        for h in all_prices:
+            if h["hour"] < now_hour or h["hour"] >= now_hour + deadline_hours:
+                continue
+            cap = slot_capacity_kwh(h["hour"], now_dt, max_kWh_per_hour)
+            if cap <= 0:
+                continue
+            total += cap
+            n += 1
+        if n > 0:
+            return round(total, 4)
 
     # No price grid — assume continuous availability for deadline_hours
     return round(deadline_hours * max_kWh_per_hour, 4)
@@ -697,6 +813,13 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         # End of the contiguous block we already started; knapsack must not
         # abandon it mid-hour for a later cheaper slot.
         self._locked_session_end: datetime | None = None
+        # Published plan: freeze while unplugged so a missed 12:30 does not
+        # slide 12:31 → 12:32 every tick. Rebuilt on hour change, input change,
+        # dying ≤10 min stub, elapsed window, or actual plug-in (start replan).
+        self._frozen_sessions: list[dict] = []
+        self._frozen_hour: tuple[date_type, int] | None = None
+        self._frozen_signature: Any = None
+        self._start_replan_done: bool = False
         # Locked when override is selected (target + absolute wall-clock deadline)
         self._override_target_soc: int | None = None
         self._override_deadline: datetime | None = None
@@ -886,6 +1009,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             self._override_deadline = now + timedelta(minutes=minutes)
             self._charging_started = False
             self._locked_session_end = None
+            self._clear_plan_freeze()
             _LOGGER.info(
                 "Override full replan: target=%d%% within %d min (deadline %s)",
                 target, minutes, self._override_deadline,
@@ -973,7 +1097,71 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._override_deadline_minutes = None
         self._charging_started = False
         self._locked_session_end = None
+        self._clear_plan_freeze()
         self._schedule_persist_override()
+
+    def _clear_plan_freeze(self) -> None:
+        self._frozen_sessions = []
+        self._frozen_hour = None
+        self._frozen_signature = None
+        self._start_replan_done = False
+
+    def _freeze_plan(
+        self, sessions: list[dict], now: datetime, signature: Any
+    ) -> None:
+        self._frozen_sessions = sessions
+        self._frozen_hour = (now.date(), now.hour)
+        self._frozen_signature = signature
+
+    def _plan_signature(
+        self,
+        mode: str,
+        target_soc: int,
+        E_needed: float,
+        use_price_cap: bool,
+        max_price: float,
+        deadline_hours: float,
+        all_prices: list[dict],
+    ) -> tuple:
+        prices = tuple(
+            (int(h["hour"]), round(float(h["price"]), 3))
+            for h in (all_prices or [])[:48]
+        )
+        dl = int(deadline_hours) if deadline_hours >= 1 else round(float(deadline_hours), 2)
+        return (
+            mode,
+            int(target_soc),
+            round(float(E_needed), 1),
+            bool(use_price_cap),
+            round(float(max_price or 0.0), 2),
+            dl,
+            prices,
+        )
+
+    def _build_sessions(
+        self,
+        all_prices: list[dict],
+        E_needed: float,
+        max_charge_rate_kW: float,
+        now: datetime,
+        deadline_hours: float,
+        max_price: float | None,
+        charge_amps: int,
+        prefer_current_hour: bool = False,
+    ) -> list[dict]:
+        plan = build_schedule(
+            all_prices,
+            E_needed,
+            max_charge_rate_kW,
+            now,
+            deadline_hours=deadline_hours,
+            max_price=max_price,
+            prefer_current_hour=prefer_current_hour,
+        )
+        return assign_session_amps(
+            drop_short_sessions(compute_sessions(plan, now.date())),
+            charge_amps,
+        )
 
     async def async_setup(self) -> None:
         """Register state-change listeners for all relevant external entities."""
@@ -1136,6 +1324,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             )
             self._charging_started = False
             self._locked_session_end = None
+            self._start_replan_done = False
 
         # Feature (flag, default ON): car charge limit replan — keep override window
         car_limit = self._read_car_charge_limit() if feature_car_limit else None
@@ -1255,6 +1444,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         if current_soc >= target_soc:
             self._charging_started = False
             self._locked_session_end = None
+            self._clear_plan_freeze()
 
         # Unknown SoC ⇒ no plan at all (a 0 % guess would plan a full battery).
         E_needed = (
@@ -1293,13 +1483,57 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             # Smart: cheapest hours under price cap.
             # Override: cheapest hours within absolute deadline, no price hard-stop
             # (may wait for a later cheap slot — not forced ASAP).
-            plan = uncapped if mode == MODE_OVERRIDE else (
-                capped if use_price_cap else uncapped
+            price_for_plan = None if mode == MODE_OVERRIDE else (
+                price_cap if use_price_cap else None
             )
-            # Sessions at full wall rate (fast_amps). No amp-flatten second pass.
-            sessions = assign_session_amps(
-                compute_sessions(plan, now.date()), charge_amps
+            # Preview (unplugged) does not force the current hour. Plug-in and
+            # live-session adoption take remaining minutes of this hour first.
+            fresh = self._build_sessions(
+                all_prices, E_needed, max_charge_rate_kW, now,
+                deadline_hours, price_for_plan, charge_amps,
+                prefer_current_hour=False,
             )
+            start_fresh = self._build_sessions(
+                all_prices, E_needed, max_charge_rate_kW, now,
+                deadline_hours, price_for_plan, charge_amps,
+                prefer_current_hour=True,
+            )
+            sig = self._plan_signature(
+                mode, int(target_soc), E_needed, use_price_cap,
+                float(max_price_threshold), float(deadline_hours), all_prices,
+            )
+            stale = frozen_plan_stale(
+                frozen=self._frozen_sessions,
+                frozen_hour=self._frozen_hour,
+                frozen_signature=self._frozen_signature,
+                now=now,
+                signature=sig,
+                charging_started=self._charging_started,
+                locked_session_end=self._locked_session_end,
+            )
+            if adopted_live_session:
+                sessions = start_fresh
+                self._freeze_plan(sessions, now, sig)
+                self._start_replan_done = True
+                _LOGGER.info("Adopted live session; plan from %s", now.strftime("%H:%M"))
+            elif should_start_replan(
+                charging_started=self._charging_started,
+                start_replan_done=self._start_replan_done,
+                cable_connected=cable_connected,
+                is_home=is_home,
+                sessions=self._frozen_sessions or fresh,
+                now=now,
+            ):
+                sessions = start_fresh
+                self._freeze_plan(sessions, now, sig)
+                self._start_replan_done = True
+                _LOGGER.info("Session start replan from %s", now.strftime("%H:%M"))
+            elif stale:
+                sessions = fresh
+                self._freeze_plan(sessions, now, sig)
+                _LOGGER.debug("Plan rebuilt (%s)", stale)
+            else:
+                sessions = self._frozen_sessions or fresh
 
         # An adopted session has no lock (we never saw it start). If the fresh
         # plan tail-packs the remaining energy later in *this* hour, bridge that

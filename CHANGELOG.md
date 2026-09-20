@@ -7,6 +7,20 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.13] — 20-09-2026
+
+### Fixed
+
+- **Late plug-in no longer keeps a window that assumed you started on time.**
+  The knapsack treated the current hour as a full 60 min, so a 13:00–14:21
+  plan was still published at 13:35. When that lock expired, leftover minutes
+  were tail-packed to 14:28–15:00 and Autel Remote-off'd for a 7 min gap in
+  the same cheap hour (19-09-2026). The current hour now only has the minutes
+  actually left. Missing a start freezes the published plan inside the hour
+  (no 12:31→12:32 dashboard slide). Plugging in inside the window replans
+  once from now, prefers the remaining minutes of this hour, then locks.
+  Isolated sessions of 10 min or shorter are dropped (except `min_soc_floor`).
+
 ## [1.5.12] — 10-09-2026
 
 ### Added
