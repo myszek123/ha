@@ -81,8 +81,9 @@ class _ConfigFlow(metaclass=_HAFlowMeta):
 
 
 class _OptionsFlow(metaclass=_HAFlowMeta):
-    def __init__(self, config_entry=None):
-        self.config_entry = config_entry
+    # Like current HA: no constructor argument; HA supplies config_entry itself
+    # (a read-only property there), so subclasses must not assign it.
+    config_entry = None
 
     async def async_step_init(self, user_input=None):
         pass

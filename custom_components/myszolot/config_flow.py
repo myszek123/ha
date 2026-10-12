@@ -75,14 +75,15 @@ class MyszolotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return MyszolotOptionsFlow(config_entry)
+        return MyszolotOptionsFlow()
 
 
 class MyszolotOptionsFlow(config_entries.OptionsFlow):
     """Handle options (reconfigure) flow."""
 
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
+    # No __init__: HA sets config_entry itself, and it became a read-only
+    # property — assigning it raised AttributeError and the options dialog
+    # answered 500 (found 12-10-2026).
 
     async def async_step_init(self, user_input=None):
         errors = {}

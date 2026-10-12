@@ -4,6 +4,14 @@
 
 Smart price-based charging scheduler for Tesla and other EVs in Home Assistant. Optimizes charging times based on electricity prices while respecting battery health and time constraints.
 
+## ⚠ Top-priority rule: away = hands off
+
+**When the car is not at home, nothing in Home Assistant may affect the car in
+any shape or form.** Away, the driver charges however they like (any SoC, time,
+duration). It applies to the whole integration and every automation, and it
+beats every other feature. Definition, allowed/forbidden lists, enforcement and
+checklist: [`docs/AWAY-HANDS-OFF.md`](docs/AWAY-HANDS-OFF.md).
+
 ## Features
 
 - **Smart (default)**: Always-on daily charging to 80% using cheapest hours; skips new sessions when SoC is already high enough (≥ `charge_start_soc`); hard price stop above threshold
@@ -180,7 +188,9 @@ reason changes.
 
 ## External Entities (Write)
 
-Actuated by automations from `sensor.myszolot_charge_reason`:
+Actuated by automations from `sensor.myszolot_charge_reason`, and **only while
+the car is at home** (see the hands-off rule above). The integration itself
+writes only `number.myszolot_charge_limit`, through one gated method.
 
 | Entity | Purpose |
 |---|---|
@@ -287,14 +297,18 @@ and is not what was wanted.
 - **Both legs count.** A stay-shaped entry like "Brajniki visit"
   03-09 18:00 → 08-09 20:15 means drive out at the start and drive home at the
   end, so start *and* end are candidate departures. Keying off the start alone
-  missed every return leg.
+  missed every return leg. A return leg only arms if the car is home at that
+  point (e.g. a stay entered for a trip that starts and ends at home).
 - **On a hit:** target = the event's `NN%` (96 for an untagged key place),
   **deadline = time until departure** (floored to
   whole hours so it lands before you leave), then mode → `override`. The
   planner still buys the cheapest Pstryk hours inside that window rather than
-  charging flat out. At home it actuates the charger; away it cannot, but
-  override still pins the car's own limit to the target (`restore_default=False`),
-  so plugging in at the działka charges for the drive back.
+  charging flat out.
+- **Only at home** (hands-off rule): the option has a
+  `device_tracker.myszolot_location == home` condition. A return leg that starts
+  at the cabin or działka is **not** armed. Away, you set the car's limit
+  yourself and nothing in HA touches it. Before 12-10-2026 this armed the
+  return leg from the cabin and pushed the trip target to the car while away.
 - **Why override and not a bare `number.set_value`:** in smart mode the
   planner's target is 80 %, so the moment SoC reaches 80 the coordinator's
   `should_reset_car_limit_after_session()` pushes the car limit back to default

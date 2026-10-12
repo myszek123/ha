@@ -617,6 +617,25 @@ def car_positively_away(
     return True  # vision says the spot is empty
 
 
+def car_writes_allowed(tracker_state: str | None) -> bool:
+    """THE hands-off rule: may HA act on the car at all right now?
+
+    Top-priority invariant for the whole integration (12-10-2026): when the car
+    is not at home, nothing here may affect the car in any shape or form — no
+    charge-limit write, no reset to the daily default, no override push. Away,
+    the driver charges however they like (any SoC, time, duration).
+
+    Only a GPS tracker positively reporting ``home`` allows writes. Everything
+    else — another zone, ``not_home``, ``unknown``, ``unavailable``, no tracker —
+    fails closed. Garage vision and the location-override helper deliberately
+    do NOT open this gate: they decide where *home charging* may start, not
+    whether the car may be commanded. Every car write must go through
+    ``MyszolotCoordinator._async_call_car_service``, which checks this;
+    tests/test_away_hands_off.py enforces both.
+    """
+    return (tracker_state or "").strip().lower() == "home"
+
+
 def should_reset_car_limit_after_session(
     *,
     feature_enabled: bool,
@@ -832,6 +851,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         self._awaiting_default_since: datetime | None = None
         # How long to pin target to default while waiting for car write (asleep car)
         self._awaiting_default_timeout = timedelta(minutes=15)
+        # Last car write the hands-off gate refused (log throttle only).
+        self._last_blocked_car_write: str | None = None
         # Override → smart: short pending window so a quick re-tap of override
         # cancels without full replan (keeps remaining deadline/target).
         self._pending_smart: bool = False
@@ -908,20 +929,46 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         (or timeout). restore_default=False: push intended limit (e.g. override
         target) without changing adopt-guard state.
         """
+        if not self._car_writes_allowed():
+            self._log_blocked_car_write(f"charge limit {int(value)}%")
+            return
         if restore_default:
             self._awaiting_default_car_limit = True
             self._awaiting_default_since = datetime.now()
         self.hass.async_create_task(self._async_set_car_charge_limit(int(value)))
 
+    def _car_writes_allowed(self) -> bool:
+        tracker = self.hass.states.get(DEVICE_TRACKER)
+        return car_writes_allowed(tracker.state if tracker is not None else None)
+
+    def _log_blocked_car_write(self, what: str) -> None:
+        """Info once per distinct blocked write, debug afterwards (no 10 s spam)."""
+        if self._last_blocked_car_write != what:
+            self._last_blocked_car_write = what
+            _LOGGER.info("Car not home — hands off: not sending %s to the car", what)
+        else:
+            _LOGGER.debug("Car not home — still not sending %s", what)
+
+    async def _async_call_car_service(self, domain: str, service: str, data: dict) -> bool:
+        """The ONLY place this integration may call a service on the car.
+
+        Re-checks the hands-off gate at execution time, because a write
+        scheduled while home may run after the car has left. Returns True when
+        the call was made.
+        """
+        if not self._car_writes_allowed():
+            self._log_blocked_car_write(f"{domain}.{service} {data}")
+            return False
+        await self.hass.services.async_call(domain, service, data, blocking=False)
+        self._last_blocked_car_write = None
+        return True
+
     async def _async_set_car_charge_limit(self, value: int) -> None:
         try:
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": NUMBER_CHARGE_LIMIT, "value": value},
-                blocking=False,
-            )
-            _LOGGER.info("Set car charge limit to %s%%", value)
+            if await self._async_call_car_service(
+                "number", "set_value", {"entity_id": NUMBER_CHARGE_LIMIT, "value": value}
+            ):
+                _LOGGER.info("Set car charge limit to %s%%", value)
         except Exception:  # noqa: BLE001 — HA service may be missing in tests
             _LOGGER.exception("Failed to set %s to %s", NUMBER_CHARGE_LIMIT, value)
 
@@ -1667,4 +1714,5 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "charge_rate_kw": round(max_charge_rate_kW, 3),
             "car_limit_replan": feature_car_limit,
             "car_charge_limit": car_limit,
+            "car_writes_allowed": self._car_writes_allowed(),
         }

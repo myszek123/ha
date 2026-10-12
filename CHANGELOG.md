@@ -7,6 +7,37 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.14] — 12-10-2026
+
+### Fixed
+
+- **Away = hands off, enforced for the whole integration.** When the car is
+  not at home, nothing in HA may affect it: no charge-limit write, no reset to
+  the daily default, no override push. On 12-10-2026 at the cabin (smart mode,
+  SoC 81 %) every limit the driver set (95, 82, 83, 94, 93…) was reset to 80
+  within ~3 s by the session-complete reset in `car_limit_replan`, even with
+  every automation disabled. All car writes now go through one method,
+  `_async_call_car_service()`, which refuses unless
+  `device_tracker.myszolot_location` is exactly `home` (unknown/unavailable
+  count as away; location override and garage vision do not open it). The
+  check also runs when a queued write executes. A refused write is logged once:
+  `Car not home — hands off: not sending …`. New attribute
+  `car_writes_allowed` on `sensor.myszolot_charge_reason`.
+- **Trip charging arms only at home.** It used to arm the return leg from the
+  cabin/działka and push the trip target to the car while away.
+- **Integration options dialog works again.** It returned HTTP 500 on current
+  HA (`config_entry` became read-only), so `car_limit_replan` and the other
+  options could not be changed.
+
+### Added
+
+- `docs/AWAY-HANDS-OFF.md`: the rule, definitions, allowed/forbidden lists,
+  enforcement and a change checklist. Linked from README and CLAUDE.md.
+- `tests/test_away_hands_off.py` (75 tests): behaviour on every former write
+  path with the car away plus home controls (63 of them fail on the old code),
+  an AST check that only the gated method calls services, and a scanner that
+  fails on any automation/script car action without a home condition.
+
 ## [1.5.13] — 20-09-2026
 
 ### Fixed
