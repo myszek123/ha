@@ -7,6 +7,24 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.15] — 13-10-2026
+
+### Fixed
+
+- **Missing next-day prices no longer cut the charging window at midnight.**
+  The planner only considered hours that had a price, so when Pstryk had not
+  published tomorrow yet, every hour after midnight counted as unavailable. On
+  13-09-2026 (Pstryk could not resolve its API), an override to 64 % set at
+  21:31 with a deadline of 06:31 only saw 23:00: it reported max ~55 %, called
+  the target unreachable and charged at once instead of in the cheap night
+  hours. Hours without a published price are now estimated from the same hour
+  a day earlier until real prices arrive, prices are mapped by their timestamp
+  rather than list position, and tomorrow's prices no longer duplicate hours
+  in 48 h mode. `sensor.myszolot_charge_reason` and
+  `sensor.myszolot_charge_schedule` expose `estimated_price_hours`. This also
+  covers the everyday case: a window set before ~14:00 that crosses midnight
+  no longer ends at 00:00.
+
 ## [1.5.14] — 12-10-2026
 
 ### Fixed

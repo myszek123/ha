@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, date as date_type
 from typing import Any
 
@@ -451,6 +452,57 @@ def _hour_index(dt: datetime, ref_date: date_type) -> int:
     return day_offset * 24 + dt.hour
 
 
+def _parse_start(value) -> datetime | None:
+    """Parse a price entry's ISO `start` into a naive local datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def fill_missing_price_hours(
+    all_prices: list[dict],
+    now_dt: datetime,
+    deadline_hours: float,
+) -> tuple[list[dict], list[int]]:
+    """Give every hour of the planning window a price.
+
+    The knapsack and max_energy_in_window only consider hours that have a
+    price, so an hour without one was treated as unavailable. Next-day prices
+    are published around 14:00 and can be missing (on 13-09-2026 Pstryk could
+    not resolve its API all day): an override set at 21:31 with a deadline of
+    06:31 then only saw hours up to 23:00, reported the target as unreachable
+    and charged at once.
+
+    Missing hours in [now, deadline) are estimated from the same hour one day
+    earlier, then two days earlier, falling back to the mean of the known
+    prices. The planner re-runs every refresh, so estimates are replaced by
+    real prices as soon as they are published. With no price grid at all the
+    list is returned unchanged, keeping the continuous-availability fallback.
+
+    Returns (prices sorted by hour, estimated hour indices).
+    """
+    prices = _price_map(all_prices)
+    if not prices or deadline_hours <= 0:
+        return sorted(all_prices, key=lambda h: h["hour"]), []
+    mean_price = sum(prices.values()) / len(prices)
+    now_hour = now_dt.hour
+    end_hour = now_hour + int(math.ceil(deadline_hours))
+    filled = dict(prices)
+    estimated: list[int] = []
+    for hour in range(now_hour, end_hour):
+        if hour in filled:
+            continue
+        filled[hour] = prices.get(hour - 24, prices.get(hour - 48, mean_price))
+        estimated.append(hour)
+    return [{"hour": h, "price": p} for h, p in sorted(filled.items())], estimated
+
+
 def estimate_window_cost(
     start: datetime,
     end: datetime,
@@ -797,23 +849,31 @@ def _parse_float(state_obj, attr: str | None = None) -> float | None:
         return None
 
 
-def _parse_all_prices(price_state) -> list[dict]:
-    """Extract a list of {hour, price} from the pstryk sensor attributes."""
+def _parse_all_prices(price_state, ref_date: date_type | None = None) -> list[dict]:
+    """Extract a list of {hour, price} from the pstryk sensor attributes.
+
+    Hours are indexed from ref_date midnight (0–23 today, 24–47 tomorrow,
+    negative for earlier days). Pstryk entries carry an ISO `start`; mapping by
+    that timestamp instead of list position keeps a 48 h list, or a cached list
+    left over from the previous day, on the right hours. Entries without a
+    parseable `start` fall back to their `hour` key, then their position.
+    """
     if price_state is None:
         return []
     raw = price_state.attributes.get("All prices", [])
     if not raw:
         return []
-    result = []
+    by_hour: dict[int, float] = {}
     for i, entry in enumerate(raw):
         if isinstance(entry, dict):
-            hour = int(entry.get("hour", i))
             price = float(entry.get("price", 0))
+            start = _parse_start(entry.get("start")) if ref_date is not None else None
+            hour = _hour_index(start, ref_date) if start is not None else int(entry.get("hour", i))
         else:
             hour = i
             price = float(entry)
-        result.append({"hour": hour, "price": price})
-    return result
+        by_hour[hour] = price
+    return [{"hour": h, "price": p} for h, p in sorted(by_hour.items())]
 
 
 class MyszolotCoordinator(DataUpdateCoordinator):
@@ -832,6 +892,8 @@ class MyszolotCoordinator(DataUpdateCoordinator):
         # End of the contiguous block we already started; knapsack must not
         # abandon it mid-hour for a later cheaper slot.
         self._locked_session_end: datetime | None = None
+        # Hours of the last plan that had no published price (log on change only)
+        self._estimated_hours_logged = 0
         # Published plan: freeze while unplugged so a missed 12:30 does not
         # slide 12:31 → 12:32 every tick. Rebuilt on hour change, input change,
         # dying ≤10 min stub, elapsed window, or actual plug-in (start replan).
@@ -1450,15 +1512,22 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Adopting live charging session (guards were empty)")
             self._charging_started = True
 
-        all_prices = _parse_all_prices(price_state)
+        all_prices = _parse_all_prices(price_state, now.date())
 
-        # Append tomorrow prices when the window may span overnight
+        # Append tomorrow prices when the window may span overnight. Map them by
+        # timestamp and skip hours already present: in Pstryk's 48 h mode the
+        # sensor list can already contain tomorrow.
         if deadline_hours > (24 - now.hour) or deadline_hours >= 24:
             tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
             tomorrow_raw = _get_pstryk_tomorrow_prices(self.hass, tomorrow_str)
+            known_hours = {h["hour"] for h in all_prices}
             for j, entry in enumerate(tomorrow_raw):
-                price = float(entry.get("price", 0))
-                all_prices.append({"hour": 24 + j, "price": price})
+                start = _parse_start(entry.get("start"))
+                hour = _hour_index(start, now.date()) if start is not None else 24 + j
+                if hour not in known_hours:
+                    all_prices.append({"hour": hour, "price": float(entry.get("price", 0))})
+                    known_hours.add(hour)
+            all_prices.sort(key=lambda h: h["hour"])
 
         # Override complete: target reached → back to smart + restore car limit 80%
         if mode == MODE_OVERRIDE and current_soc >= target_soc:
@@ -1499,6 +1568,22 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             if soc_known
             else 0.0
         )
+
+        # Every hour up to the (final) deadline needs a price, otherwise the
+        # planner treats it as unavailable and the window ends where the price
+        # list ends — see fill_missing_price_hours.
+        all_prices, estimated_price_hours = fill_missing_price_hours(
+            all_prices, now, deadline_hours
+        )
+        if estimated_price_hours and not self._estimated_hours_logged:
+            _LOGGER.warning(
+                "No published price for %d hour(s) of the planning window; "
+                "estimating them from the previous day until prices arrive",
+                len(estimated_price_hours),
+            )
+        elif not estimated_price_hours and self._estimated_hours_logged:
+            _LOGGER.info("Every planning-window hour has a published price again")
+        self._estimated_hours_logged = len(estimated_price_hours)
 
         sessions: list[dict] = []
         schedule_all_prices_above_max = False
@@ -1699,6 +1784,7 @@ class MyszolotCoordinator(DataUpdateCoordinator):
             "override_remaining_minutes": override_remaining_min,
             "feasible": feasible,
             "max_reachable_soc": max_soc,
+            "estimated_price_hours": len(estimated_price_hours),
             "shortfall_soc": shortfall_soc,
             "E_needed": round(E_needed, 3),
             "sessions": sessions,
