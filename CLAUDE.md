@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠ Top-priority rule: away = hands off
+
+**When the car is not at home, nothing in Home Assistant may affect the car in
+any shape or form.** Away, the driver charges however they like (any SoC, time,
+duration). It applies to the whole integration and every automation, and it
+beats every other feature. Definition, allowed/forbidden lists, enforcement and
+checklist: [`docs/AWAY-HANDS-OFF.md`](docs/AWAY-HANDS-OFF.md).
+
+Before changing `custom_components/myszolot/` or `automations/`:
+- car writes in the integration go **only** through
+  `MyszolotCoordinator._async_call_car_service()` (it checks the gate);
+- automation actions on car entities or the integration's controls sit under
+  the canonical home condition (see the doc);
+- `python3 -m pytest -q` must pass, including `tests/test_away_hands_off.py`;
+  a new path that writes to the car gets an away test and a home control test;
+- the PR says how the rule is kept.
+
 
 
 This project contains Home Assistant automations for learning Claude Code.
