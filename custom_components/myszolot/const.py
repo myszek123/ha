@@ -56,6 +56,9 @@ DEFAULT_OVERRIDE_DEADLINE_MINUTES = 120
 DEFAULT_CAR_LIMIT_REPLAN = True
 # Override → smart: wait this long so a quick re-tap of override cancels (no replan)
 MODE_PENDING_SMART_SECONDS = 8
+# Isolated planned blocks this short or shorter are dropped (late-plug leftovers
+# like 13:00–13:01). min_soc_floor still charges immediately, any length.
+MIN_SESSION_MINUTES = 10
 # Main actuator entity (for UI/docs; notify automation checks this)
 AUTOMATION_CHARGING_ACTUATOR = "automation.tesla_charging_actuator"
 

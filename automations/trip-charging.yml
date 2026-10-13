@@ -20,13 +20,14 @@ description: >
   back to default and a manually set 96 is wiped (observed 08-09: set 96 at
   10:09, SoC hit 80 at 10:27:53, limit reset to 80 at 10:28:00). Override locks
   target_soc to the trip target so the reset never fires, and set_mode() pushes
-  the limit to the car itself with restore_default=False, which works even when
-  away.
+  the limit to the car itself with restore_default=False.
 
-  One branch serves both legs. At home the planner buys the cheapest Pstryk
-  hours inside the window; away it cannot actuate the charger but still pins
-  the car to the trip target, so plugging in at the działka charges for the
-  drive back.
+  Arms ONLY while the car is at home — the hands-off rule (12-10-2026,
+  docs/AWAY-HANDS-OFF.md): away, nothing in HA may affect the car, and the
+  driver sets the limit and charges however they like. A departure from home
+  gets the cheapest Pstryk hours inside the window. A return leg that starts
+  away (cabin, działka) is NOT armed; that used to pin the car to the trip
+  target from the cabin and fight the driver's own settings.
 
   Charging is deliberately tied to departure only — never to arrival. Topping
   up on arrival would leave the car near full for the whole stay, which is bad
@@ -55,6 +56,11 @@ actions:
       # ── Calendar: a drive starts or ends within 16 h → arm trip override ──
       - alias: Calendar trip within 16 h
         conditions:
+          # Hands-off rule: the car must be at home. Away, HA never touches
+          # the car — not even through override (docs/AWAY-HANDS-OFF.md).
+          - condition: state
+            entity_id: device_tracker.myszolot_location
+            state: home
           - condition: trigger
             id: calendar_scan
           # Only arm from a clean smart state; if already in override, leave
@@ -177,7 +183,8 @@ actions:
               value: "{{ window_hours }}"
 
           # Full replan: locks the trip target against the deadline we just
-          # wrote, and pushes the limit to the car even when it is away from home.
+          # wrote, and pushes the limit to the car (at home — this branch only
+          # runs at home).
           - action: select.select_option
             target:
               entity_id: select.myszolot_charge_mode

@@ -114,6 +114,7 @@ class MyszolotChargeReasonSensor(_MyszolotBaseSensor):
             "location_override_active": d.get("location_override_active", False),
             "car_limit_replan": d.get("car_limit_replan", True),
             "car_charge_limit": d.get("car_charge_limit"),
+            "car_writes_allowed": d.get("car_writes_allowed", False),
         }
 
 

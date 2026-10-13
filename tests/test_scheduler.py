@@ -127,6 +127,20 @@ def test_build_schedule_zero_e_needed():
     assert result == []
 
 
+def test_build_schedule_current_hour_is_partial():
+    """At 13:35 hour 13 only has 25 min left, not a phantom 60."""
+    now = datetime(2024, 1, 15, 13, 35)
+    all_prices = prices((13, 0.2), (14, 0.3))
+    result = build_schedule(
+        all_prices, E_needed=20.0, max_kWh_per_hour=MAX_KWH, now_dt=now,
+    )
+    by_hour = {s["hour"]: s for s in result}
+    assert by_hour[13]["minutes"] == 25
+    assert by_hour[13]["full"] is False
+    assert by_hour[14]["minutes"] == 60
+    assert by_hour[14]["full"] is True
+
+
 # ── compute_sessions ──────────────────────────────────────────────────────────
 
 def test_compute_sessions_empty():

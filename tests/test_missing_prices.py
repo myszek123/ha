@@ -98,7 +98,8 @@ def test_override_window_is_not_cut_at_midnight_when_tomorrow_is_missing():
     prices, estimated = fill_missing_price_hours(today_only, now, deadline_hours)
     assert estimated
     max_kwh = max_energy_in_window(prices, RATE, now, deadline_hours)
-    assert max_kwh == pytest.approx(8 * RATE)  # 23:00 … 06:00
+    # 23:15 → only 45 min of 23:00 (1.5.13), then 00:00 … 06:00 in full
+    assert max_kwh == pytest.approx(7.75 * RATE)
     assert max_reachable_soc(44, max_kwh, BATTERY) >= 64
 
     plan = build_schedule(prices, e_needed, RATE, now, deadline_hours=deadline_hours)

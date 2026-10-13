@@ -7,6 +7,69 @@ HACS / Home Assistant show these notes when you update (GitHub Releases use the 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning: [SemVer](https://semver.org/).
 
+## [1.5.15] — 13-10-2026
+
+### Fixed
+
+- **Missing next-day prices no longer cut the charging window at midnight.**
+  The planner only considered hours that had a price, so when Pstryk had not
+  published tomorrow yet, every hour after midnight counted as unavailable. On
+  13-09-2026 (Pstryk could not resolve its API), an override to 64 % set at
+  21:31 with a deadline of 06:31 only saw 23:00: it reported max ~55 %, called
+  the target unreachable and charged at once instead of in the cheap night
+  hours. Hours without a published price are now estimated from the same hour
+  a day earlier until real prices arrive, prices are mapped by their timestamp
+  rather than list position, and tomorrow's prices no longer duplicate hours
+  in 48 h mode. `sensor.myszolot_charge_reason` and
+  `sensor.myszolot_charge_schedule` expose `estimated_price_hours`. This also
+  covers the everyday case: a window set before ~14:00 that crosses midnight
+  no longer ends at 00:00.
+
+## [1.5.14] — 12-10-2026
+
+### Fixed
+
+- **Away = hands off, enforced for the whole integration.** When the car is
+  not at home, nothing in HA may affect it: no charge-limit write, no reset to
+  the daily default, no override push. On 12-10-2026 at the cabin (smart mode,
+  SoC 81 %) every limit the driver set (95, 82, 83, 94, 93…) was reset to 80
+  within ~3 s by the session-complete reset in `car_limit_replan`, even with
+  every automation disabled. All car writes now go through one method,
+  `_async_call_car_service()`, which refuses unless
+  `device_tracker.myszolot_location` is exactly `home` (unknown/unavailable
+  count as away; location override and garage vision do not open it). The
+  check also runs when a queued write executes. A refused write is logged once:
+  `Car not home — hands off: not sending …`. New attribute
+  `car_writes_allowed` on `sensor.myszolot_charge_reason`.
+- **Trip charging arms only at home.** It used to arm the return leg from the
+  cabin/działka and push the trip target to the car while away.
+- **Integration options dialog works again.** It returned HTTP 500 on current
+  HA (`config_entry` became read-only), so `car_limit_replan` and the other
+  options could not be changed.
+
+### Added
+
+- `docs/AWAY-HANDS-OFF.md`: the rule, definitions, allowed/forbidden lists,
+  enforcement and a change checklist. Linked from README and CLAUDE.md.
+- `tests/test_away_hands_off.py` (75 tests): behaviour on every former write
+  path with the car away plus home controls (63 of them fail on the old code),
+  an AST check that only the gated method calls services, and a scanner that
+  fails on any automation/script car action without a home condition.
+
+## [1.5.13] — 20-09-2026
+
+### Fixed
+
+- **Late plug-in no longer keeps a window that assumed you started on time.**
+  The knapsack treated the current hour as a full 60 min, so a 13:00–14:21
+  plan was still published at 13:35. When that lock expired, leftover minutes
+  were tail-packed to 14:28–15:00 and Autel Remote-off'd for a 7 min gap in
+  the same cheap hour (19-09-2026). The current hour now only has the minutes
+  actually left. Missing a start freezes the published plan inside the hour
+  (no 12:31→12:32 dashboard slide). Plugging in inside the window replans
+  once from now, prefers the remaining minutes of this hour, then locks.
+  Isolated sessions of 10 min or shorter are dropped (except `min_soc_floor`).
+
 ## [1.5.12] — 10-09-2026
 
 ### Added
@@ -36,17 +99,6 @@ versioning: [SemVer](https://semver.org/).
 
 ### Fixed
 
-- **Missing next-day prices no longer cut the charging window at midnight.**
-  The planner only considered hours that had a price, so when Pstryk had not
-  published tomorrow yet, every hour after midnight counted as unavailable. On
-  13-09-2026 (Pstryk could not resolve its API), an override to 64 % set at
-  21:31 with a deadline of 06:31 only saw 23:00: it reported max ~55 %, called
-  the target unreachable and charged at once instead of in the cheap night
-  hours. Hours without a published price are now estimated from the same hour
-  a day earlier until real prices arrive, prices are mapped by their timestamp
-  rather than list position, and tomorrow's prices no longer duplicate hours
-  in 48 h mode. `sensor.myszolot_charge_reason` and
-  `sensor.myszolot_charge_schedule` expose `estimated_price_hours`.
 - **Charging actuator no longer toggles the car's charge switch every minute
   while the Autel is offline.** The Start branch turned `switch.myszolot_charge`
   on whenever it was "not on". With no power the car rejected the command and

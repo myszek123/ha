@@ -81,3 +81,22 @@ def test_schema_invalid_voltage_too_low():
 def test_schema_invalid_soc_out_of_range():
     with pytest.raises(vol.Invalid):
         CONFIG_SCHEMA({**VALID_INPUT, CONF_DEFAULT_TARGET_SOC: 150})
+
+
+def test_options_flow_does_not_assign_config_entry():
+    """HA made OptionsFlow.config_entry a read-only property; assigning it in
+    __init__ raised AttributeError and the options dialog returned HTTP 500
+    (12-10-2026), so car_limit_replan could not be changed from the UI."""
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.myszolot.config_flow import MyszolotConfigFlow, MyszolotOptionsFlow
+
+    entry = SimpleNamespace(data={}, options={})
+
+    class StrictFlow(MyszolotOptionsFlow):  # mimics HA: read-only property
+        config_entry = property(lambda self: entry)
+
+    flow = StrictFlow()  # must not raise
+    form = asyncio.run(flow.async_step_init())
+    assert form["step_id"] == "init"
+    assert isinstance(MyszolotConfigFlow.async_get_options_flow(entry), MyszolotOptionsFlow)
